@@ -100,17 +100,24 @@ final class ARCoordinator: NSObject, ARSCNViewDelegate, ARSessionDelegate, UIGes
         scene.placeAvatar(at: worldPos)
     }
 
+    /// Avoids `.estimatedPlane` (guesses surfaces, locks avatar at wrong Y).
+    /// Geometry hits first so taps don't land on infinite-plane extensions of
+    /// a coffee-table; lowest-Y tie-break picks the floor over a table plane.
     private func raycast(at point: CGPoint) -> ARRaycastResult? {
         guard let view = arView else { return nil }
+        if let q = view.raycastQuery(from: point, allowing: .existingPlaneGeometry, alignment: .horizontal) {
+            let hits: [ARRaycastResult] = view.session.raycast(q)
+            if let floor = lowestY(hits) { return floor }
+        }
         if let q = view.raycastQuery(from: point, allowing: .existingPlaneInfinite, alignment: .horizontal) {
             let hits: [ARRaycastResult] = view.session.raycast(q)
-            if let first = hits.first { return first }
-        }
-        if let q = view.raycastQuery(from: point, allowing: .estimatedPlane, alignment: .horizontal) {
-            let hits: [ARRaycastResult] = view.session.raycast(q)
-            return hits.first
+            if let floor = lowestY(hits) { return floor }
         }
         return nil
+    }
+
+    private func lowestY(_ hits: [ARRaycastResult]) -> ARRaycastResult? {
+        hits.min { $0.worldTransform.columns.3.y < $1.worldTransform.columns.3.y }
     }
 
     nonisolated func renderer(_ renderer: SCNSceneRenderer, updateAtTime time: TimeInterval) {

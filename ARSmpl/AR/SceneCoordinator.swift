@@ -26,6 +26,10 @@ final class SceneCoordinator: NSObject, SCNSceneRendererDelegate {
 
     private var poseApplier: RigPoseApplier?
 
+    /// Translucent disc parented under `avatarContainer` for an AR-mode
+    /// contact shadow; the camera feed has no real lighting otherwise.
+    private var contactShadowNode: SCNNode?
+
     /// Lifts the rig so feet rest on Y=0. Read from the asset bbox at load.
     private var rigGroundLift: Float = 0
 
@@ -218,6 +222,23 @@ final class SceneCoordinator: NSObject, SCNSceneRendererDelegate {
         }
     }
 
+    private func ensureContactShadow() {
+        guard contactShadowNode == nil else { return }
+        let plane = SCNPlane(width: 0.6, height: 0.6)
+        let mat = SCNMaterial()
+        mat.diffuse.contents = UIColor.black
+        mat.transparency = 0.35
+        mat.isDoubleSided = true
+        mat.writesToDepthBuffer = false
+        mat.lightingModel = .constant
+        plane.materials = [mat]
+        let node = SCNNode(geometry: plane)
+        node.simdEulerAngles = SIMD3<Float>(-.pi / 2, 0, 0)
+        node.isHidden = true
+        avatarContainer.addChildNode(node)
+        contactShadowNode = node
+    }
+
     private func applyColor(index: Int) {
         guard let root = loadedRigRoot else { return }
         let entry = BODY_COLORS[index]
@@ -226,7 +247,10 @@ final class SceneCoordinator: NSObject, SCNSceneRendererDelegate {
     }
 
     private func applyTransforms() {
-        let hipsLift = poseApplier?.hipsLift ?? 0.92
+        // hipsLift fallback must be 0: the only shipped factory (forSmpl)
+        // passes 0, and a non-zero fallback during the load window levitates
+        // the avatar.
+        let hipsLift = poseApplier?.hipsLift ?? 0
         let effScale = modelScale * avatarUserScale
         let yLift = (rigGroundLift + hipsLift) * effScale
         let motion = (poseApplier?.motionTranslation ?? .zero) * effScale
@@ -248,6 +272,12 @@ final class SceneCoordinator: NSObject, SCNSceneRendererDelegate {
             avatarRot.y.degreesToRadians,
             avatarRot.z.degreesToRadians
         )
+
+        // Local -rigGroundLift cancels the container's yLift so the disc
+        // lands at world Y == placedWorldPos.y. +0.5 mm avoids z-fighting.
+        ensureContactShadow()
+        contactShadowNode?.simdPosition = SIMD3<Float>(0, -rigGroundLift + 0.0005, 0)
+        contactShadowNode?.isHidden = (lastMode != .ar) || (placedWorldPos == nil)
 
         stageContainer.simdScale = SIMD3<Float>(repeating: stageScale)
         stageContainer.simdPosition = stagePos
