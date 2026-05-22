@@ -63,10 +63,11 @@ final class BackendUrlStore: @unchecked Sendable {
 
     private func defaultUrl(for model: BackendModel, mode: BackendMode) -> String {
         switch (model, mode) {
-        case (.bamm, .local):  return "http://localhost:7860"
-        case (.mmm,  .local):  return "http://localhost:7860"
-        case (.bamm, .hosted): return "https://example.modal.run"
-        case (.mmm,  .hosted): return "https://example.modal.run"
+        case (.bamm, .local):    return "http://localhost:7860"
+        case (.mmm,  .local):    return "http://localhost:7860"
+        case (.bamm, .hosted):   return "https://example.modal.run"
+        case (.mmm,  .hosted):   return "https://example.modal.run"
+        case (_,     .onDevice): return ""  // on-device: no URL needed
         }
     }
 

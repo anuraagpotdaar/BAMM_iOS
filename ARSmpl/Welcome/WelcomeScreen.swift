@@ -165,8 +165,9 @@ struct WelcomeScreen: View {
             while !Task.isCancelled {
                 let ok: Bool
                 switch mode {
-                case .local:  ok = await BammClient(baseUrl: url).ping()
-                case .hosted: ok = await HostedBammClient(baseUrl: url).ping()
+                case .local:    ok = await BammClient(baseUrl: url).ping()
+                case .hosted:   ok = await HostedBammClient(baseUrl: url).ping()
+                case .onDevice: ok = true   // no network probe needed
                 }
                 if Task.isCancelled { return }
                 await MainActor.run { self.serverReachable = ok }

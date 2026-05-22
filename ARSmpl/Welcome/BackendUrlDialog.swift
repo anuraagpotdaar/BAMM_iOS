@@ -70,8 +70,9 @@ struct BackendUrlDialog: View {
 
     private var placeholder: String {
         switch state.backendMode {
-        case .local:  return "http://192.168.1.10:7860"
-        case .hosted: return "https://your-org--bamm.modal.run"
+        case .local:    return "http://192.168.1.10:7860"
+        case .hosted:   return "https://your-org--bamm.modal.run"
+        case .onDevice: return "(not used — on-device runs locally)"
         }
     }
 
@@ -81,6 +82,8 @@ struct BackendUrlDialog: View {
             return "Local Flask server. Use the Mac's LAN IP when running on a physical device — `localhost` only resolves on the simulator."
         case .hosted:
             return "Modal deployment URL for the \(state.backendModel.displayName) service. Returns a complete BVH per request — generation may take 30–90s on a cold start."
+        case .onDevice:
+            return "Runs the BAMM_2 pipeline (CLIP → mask + residual transformer → VQ decoder) entirely on this device using bundled int8 ONNX models. No network needed."
         }
     }
 
