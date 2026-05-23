@@ -15,6 +15,11 @@ settings:
     DEVELOPMENT_TEAM: ""
     CODE_SIGN_STYLE: Automatic
 
+packages:
+  onnxruntime-swift-package-manager:
+    url: https://github.com/microsoft/onnxruntime-swift-package-manager.git
+    from: 1.21.0
+
 targets:
   ARSmpl:
     type: application
@@ -25,6 +30,7 @@ targets:
         excludes:
           - "Resources/Models/**"
           - "Resources/Textures/**"
+          - "Resources/Bamm2/**"
           - "Info.plist"
       - path: ARSmpl/Resources/Models
         type: folder
@@ -32,6 +38,12 @@ targets:
       - path: ARSmpl/Resources/Textures
         type: folder
         buildPhase: resources
+      - path: ARSmpl/Resources/Bamm2
+        type: folder
+        buildPhase: resources
+    dependencies:
+      - package: onnxruntime-swift-package-manager
+        product: onnxruntime
     info:
       path: ARSmpl/Info.plist
       properties:
