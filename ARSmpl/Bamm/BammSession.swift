@@ -23,6 +23,11 @@ final class BammSession {
     private nonisolated let hostedClient: HostedBammClient?
     private var hostedTask: Task<Void, Never>?
 
+    @ObservationIgnored
+    private nonisolated(unsafe) var onDeviceClient: OnDeviceBammClient?
+    @ObservationIgnored
+    private var onDeviceTask: Task<Void, Never>?
+
     static func local(baseUrl: String) -> BammSession {
         BammSession(mode: .local,
                     localClient: BammClient(baseUrl: baseUrl),
@@ -35,10 +40,15 @@ final class BammSession {
                     hostedClient: HostedBammClient(baseUrl: baseUrl))
     }
 
+    static func onDevice() -> BammSession {
+        BammSession(mode: .onDevice, localClient: nil, hostedClient: nil)
+    }
+
     static func build(mode: BackendMode, baseUrl: String) -> BammSession {
         switch mode {
-        case .local:  return .local(baseUrl: baseUrl)
-        case .hosted: return .hosted(baseUrl: baseUrl)
+        case .local:    return .local(baseUrl: baseUrl)
+        case .hosted:   return .hosted(baseUrl: baseUrl)
+        case .onDevice: return .onDevice()
         }
     }
 
@@ -52,8 +62,9 @@ final class BammSession {
 
     func start(_ text: String) {
         switch mode {
-        case .local:  startLocal(text)
-        case .hosted: startHosted(text)
+        case .local:    startLocal(text)
+        case .hosted:   startHosted(text)
+        case .onDevice: startOnDevice(text)
         }
     }
 
@@ -61,8 +72,9 @@ final class BammSession {
 
     func reset() {
         switch mode {
-        case .local:  resetLocal()
-        case .hosted: resetHosted()
+        case .local:    resetLocal()
+        case .hosted:   resetHosted()
+        case .onDevice: resetOnDevice()
         }
     }
 
@@ -241,6 +253,56 @@ final class BammSession {
 
     private func resetHosted() {
         hostedTask?.cancel(); hostedTask = nil
+        pendingFrame.clear()
+        state = .stopped
+    }
+
+    // MARK: - On-device mode
+
+    private func startOnDevice(_ text: String) {
+        onDeviceTask?.cancel(); onDeviceTask = nil
+        lastError = nil
+        if onDeviceClient == nil {
+            do {
+                onDeviceClient = try OnDeviceBammClient(precision: GenerationSettings.shared.precision)
+            } catch {
+                state = .error
+                lastError = humanize("Init on-device", error)
+                return
+            }
+        }
+        let client = onDeviceClient
+        onDeviceTask = Task { [weak self] in
+            guard let self else { return }
+            await self.onDeviceFlow(client: client, text: text)
+        }
+    }
+
+    private func onDeviceFlow(client: OnDeviceBammClient?, text: String) async {
+        guard let client else { return }
+        do {
+            // Snapshot knobs so a slider drag mid-flight doesn't mutate the live pipeline.
+            let sampling = await MainActor.run { GenerationSettings.shared.snapshot() }
+            let motion = try await client.generate(textPrompt: text, sampling: sampling)
+            if Task.isCancelled { return }
+            if motion.frames.isEmpty {
+                self.state = .error
+                self.lastError = "On-device — generated zero frames."
+                return
+            }
+            self.state = .streaming
+            await hostedPlay(motion)
+        } catch is CancellationError {
+            return
+        } catch {
+            if Task.isCancelled { return }
+            self.state = .error
+            self.lastError = humanize("On-device generate", error)
+        }
+    }
+
+    private func resetOnDevice() {
+        onDeviceTask?.cancel(); onDeviceTask = nil
         pendingFrame.clear()
         state = .stopped
     }
