@@ -1,9 +1,14 @@
 import Foundation
 import simd
 
-struct BvhMotion {
+struct BvhMotion: Sendable {
     let frames: [JointFrame]
     let frameTime: TimeInterval
+}
+
+enum SomaFrame: Sendable {
+    case world
+    case camera
 }
 
 enum BvhError: Error, CustomStringConvertible {
@@ -25,7 +30,10 @@ enum BvhError: Error, CustomStringConvertible {
 
 enum BvhParser {
 
-    static func parse(_ text: String) throws -> BvhMotion {
+    static func parse(_ text: String, somaFrame: SomaFrame = .world) throws -> BvhMotion {
+
+        var text = text
+        text.makeContiguousUTF8()
         var tokens = TokenStream(text)
         try expect(&tokens, "HIERARCHY")
 
@@ -41,8 +49,6 @@ enum BvhParser {
 
         let totalChannels = joints.reduce(0) { $0 + $1.channels.count }
 
-        // BAMM and MMM both use "Spine1"/"Spine2" with different anatomy, so
-        // pick the table up-front instead of trying both.
         let style = detectStyle(joints)
 
         var firstByName: [String: Int] = [:]
@@ -50,13 +56,13 @@ enum BvhParser {
             firstByName[j.name] = i
         }
 
-        var smplIndex = [Int](repeating: -1, count: joints.count)
+        var slotOf = [Int](repeating: -1, count: joints.count)
         var missing: [String] = []
-        for k in 0..<22 {
-            if let bvhIdx = firstByName[style.humanmlNames[k]] {
-                smplIndex[bvhIdx] = k
-            } else {
-                missing.append(style.humanmlNames[k])
+        for (name, slot) in zip(style.names, style.slots) {
+            if let bvhIdx = firstByName[name] {
+                slotOf[bvhIdx] = slot
+            } else if SkeletonTopology.humanml22.contains(slot) {
+                missing.append(name)
             }
         }
         if !missing.isEmpty {
@@ -115,16 +121,23 @@ enum BvhParser {
                 }
             }
 
-            var xyz = [Float](repeating: 0, count: 66)
-            for (i, idx) in smplIndex.enumerated() where idx >= 0 && idx < 22 {
-                xyz[idx * 3]     = worldT[i].x
-                xyz[idx * 3 + 1] = worldT[i].y
-                xyz[idx * 3 + 2] = worldT[i].z
+            var xyz = [Float](repeating: .nan, count: JointFrame.floatCount)
+            for (i, slot) in slotOf.enumerated() where slot >= 0 {
+                xyz[slot * 3]     = worldT[i].x
+                xyz[slot * 3 + 1] = worldT[i].y
+                xyz[slot * 3 + 2] = worldT[i].z
             }
-            // Compensates for smpl.glb ankle bind being steeper than BAMM's
-            // static toe offset; without it the toes lift.
-            applyFootPitch(&xyz, ankle: 7, toe: 10, radians: footPitchRadians)
-            applyFootPitch(&xyz, ankle: 8, toe: 11, radians: footPitchRadians)
+
+            if style.footPitchRadians != 0 {
+                applyFootPitch(&xyz, ankle: SkeletonTopology.leftFoot, toe: SkeletonTopology.leftToeBase, radians: style.footPitchRadians)
+                applyFootPitch(&xyz, ankle: SkeletonTopology.rightFoot, toe: SkeletonTopology.rightToeBase, radians: style.footPitchRadians)
+            }
+            if style.facesCamera {
+                switch somaFrame {
+                case .world:  SkeletonTopology.gemxToSceneFrame(&xyz)
+                case .camera: SkeletonTopology.gemxToCameraFrame(&xyz)
+                }
+            }
             outFrames.append(JointFrame(xyz))
         }
 
@@ -145,7 +158,7 @@ enum BvhParser {
         } else if header == "JOINT" {
             name = tokens.next() ?? ""
         } else if header == "End" {
-            _ = tokens.next() // "Site"
+            _ = tokens.next()
             name = "_EndSite"
         } else {
             throw BvhError.malformed("Unexpected token in HIERARCHY: \(header)")
@@ -231,19 +244,27 @@ enum BvhParser {
 
     private struct SkeletonStyle {
         let label: String
-        let humanmlNames: [String]
+        let names: [String]
+        let slots: [Int]
+        let footPitchRadians: Float
+
+        var facesCamera: Bool = false
     }
 
     private static func detectStyle(_ joints: [BvhJoint]) -> SkeletonStyle {
         var names = Set<String>()
         for j in joints { names.insert(j.name) }
         if names.contains("Pelvis"), names.contains("Left_hip") {
-            return SkeletonStyle(label: "MMM", humanmlNames: mmmNames)
+            return SkeletonStyle(label: "MMM", names: mmmNames, slots: SkeletonTopology.humanml22, footPitchRadians: footPitchRadians)
+        }
+
+        if names.contains("Hips"), names.contains("LeftShin"), names.contains("Chest") {
+            return SkeletonStyle(label: "SOMA", names: SkeletonTopology.names, slots: Array(0..<SkeletonTopology.jointCount), footPitchRadians: 0, facesCamera: true)
         }
         if names.contains("Hips"), names.contains("LeftUpLeg") {
-            return SkeletonStyle(label: "BAMM", humanmlNames: bammNames)
+            return SkeletonStyle(label: "BAMM", names: bammNames, slots: SkeletonTopology.humanml22, footPitchRadians: footPitchRadians)
         }
-        return SkeletonStyle(label: "BAMM?", humanmlNames: bammNames)
+        return SkeletonStyle(label: "BAMM?", names: bammNames, slots: SkeletonTopology.humanml22, footPitchRadians: footPitchRadians)
     }
 
     private static func expect(_ tokens: inout TokenStream, _ word: String) throws {
@@ -252,7 +273,6 @@ enum BvhParser {
         }
     }
 
-    /// Tune if the toe drives into the floor (decrease) or stays lifted (increase).
     private static let footPitchRadians: Float = 35.0 * .pi / 180.0
 
     private static func applyFootPitch(_ xyz: inout [Float], ankle: Int, toe: Int, radians: Float) {
