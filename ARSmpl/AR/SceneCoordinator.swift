@@ -7,7 +7,7 @@ import UIKit
 @MainActor
 final class SceneCoordinator: NSObject, SCNSceneRendererDelegate {
 
-    enum Mode { case threeD, ar }
+    enum Mode { case threeD, ar, overlay }
 
     private let pendingFrame: PendingFrameBox
     private(set) var loader = RigLoader()
@@ -15,9 +15,6 @@ final class SceneCoordinator: NSObject, SCNSceneRendererDelegate {
     private weak var scene: SCNScene?
     private weak var rendererView: SCNView?
 
-    /// Parents the loaded rigRoot. Its transform carries UI-controlled
-    /// translate/rotate/scale — kept separate from rigRoot so the pose applier
-    /// can mutate joints without fighting the UI.
     private(set) var avatarContainer = SCNNode()
     private(set) var stageContainer = SCNNode()
 
@@ -26,11 +23,8 @@ final class SceneCoordinator: NSObject, SCNSceneRendererDelegate {
 
     private var poseApplier: RigPoseApplier?
 
-    /// Translucent disc parented under `avatarContainer` for an AR-mode
-    /// contact shadow; the camera feed has no real lighting otherwise.
     private var contactShadowNode: SCNNode?
 
-    /// Lifts the rig so feet rest on Y=0. Read from the asset bbox at load.
     private var rigGroundLift: Float = 0
 
     private(set) var lastRig: RigKind = .smpl
@@ -39,18 +33,19 @@ final class SceneCoordinator: NSObject, SCNSceneRendererDelegate {
     private(set) var lastMode: Mode = .threeD
 
     private var avatarPos = SIMD3<Float>(0, 0, 0)
-    private var avatarRot = SIMD3<Float>(0, 0, 0) // degrees
+    private var avatarRot = SIMD3<Float>(0, 0, 0)
     private var avatarUserScale: Float = 1
     private var modelScale: Float = 1
 
     private var stagePos = SIMD3<Float>(0, 0, 0)
-    private var stageRot = SIMD3<Float>(0, 0, 0) // degrees
+    private var stageRot = SIMD3<Float>(0, 0, 0)
     private var stageScale: Float = 0.25
 
     var anchorLocalOffset = SIMD3<Float>(0, 0, 0)
 
-    /// World position of the latest tap-to-place; nil before first tap.
     private(set) var placedWorldPos: SIMD3<Float>? = nil
+
+    private var fitScale: Float? = nil
 
     var onFirstFrame: (@MainActor () -> Void)?
     private var firstFrameSeen = false
@@ -78,6 +73,7 @@ final class SceneCoordinator: NSObject, SCNSceneRendererDelegate {
     }
 
     func applyState(_ state: AppState, mode: Mode) {
+        if lastMode != mode { fitScale = nil; poseApplier?.resetMotionAnchor() }
         lastMode = mode
 
         if state.firstFrameNeedsReset {
@@ -108,9 +104,7 @@ final class SceneCoordinator: NSObject, SCNSceneRendererDelegate {
             lastColorIndex = state.colorIndex
         }
 
-        // AR mode ignores the avatar-editor offsets so the rig stays anchored
-        // at the tap point. modelScale (FAB) still applies in both modes.
-        if mode == .ar {
+        if mode == .ar || mode == .overlay {
             avatarPos = .zero
             avatarRot = .zero
             avatarUserScale = 1
@@ -161,27 +155,34 @@ final class SceneCoordinator: NSObject, SCNSceneRendererDelegate {
         Task { @MainActor in
             guard let applier = self.poseApplier, applier.isReady else { return }
             applier.apply(frame)
+            if self.lastMode == .overlay, self.fitScale == nil, applier.bindChainLength > 0.05 {
+                let l = RigPoseApplier.chainLength(frame.xyz)
+                if l > 0.05 {
+                    self.fitScale = l / applier.bindChainLength
+                    NSLog("[SceneCoordinator] overlay fitScale=\(l / applier.bindChainLength) (subject chain \(l) m, rig \(applier.bindChainLength))")
+                }
+            }
             self.applyTransforms()
             if !self.firstFrameSeen {
                 self.firstFrameSeen = true
+                NSLog("[SceneCoordinator] first frame applied in mode \(self.lastMode)")
                 self.onFirstFrame?()
             }
         }
     }
 
-    func resetFirstFrame() { firstFrameSeen = false }
+    func resetFirstFrame() { firstFrameSeen = false; fitScale = nil; poseApplier?.resetMotionAnchor() }
 
     private func loadRig(_ rig: RigKind) {
         if let old = loadedRigRoot { old.removeFromParentNode() }
         loadedRigRoot = nil
         poseApplier = nil
 
-        // Reset to identity so the new rig's bind-pose capture sees joints in
-        // their true local frame; otherwise the previous rig's groundLift /
-        // scale leaks through and the new rig renders squashed.
         avatarContainer.simdPosition = .zero
         avatarContainer.simdScale = SIMD3<Float>(repeating: 1)
         avatarContainer.simdEulerAngles = .zero
+        avatarContainer.isHidden = false
+        fitScale = nil
 
         do {
             let loaded = try loader.load(rig)
@@ -195,7 +196,7 @@ final class SceneCoordinator: NSObject, SCNSceneRendererDelegate {
                 avatarContainer: avatarContainer
             )
             poseApplier = applier
-            NSLog("[SceneCoordinator] rig=\(rig.rawValue) loaded. applier.isReady=\(applier.isReady) matched=\(applier.matchedCount)/22 missingJoints=\(applier.missingJointIndices) hipsLift=\(applier.hipsLift)")
+            NSLog("[SceneCoordinator] rig=\(rig.rawValue) loaded. applier.isReady=\(applier.isReady) matched=\(applier.matchedCount)/\(SkeletonTopology.jointCount) body=\(applier.coreMatchedCount)/22 missingBody=\(applier.missingJointIndices) hipsLift=\(applier.hipsLift)")
 
             if let pelvis = loaded.bonesByName[SkeletonTopology.normalize("Pelvis")]
                 ?? loaded.bonesByName[SkeletonTopology.normalize("mixamorig:Hips")],
@@ -247,9 +248,12 @@ final class SceneCoordinator: NSObject, SCNSceneRendererDelegate {
     }
 
     private func applyTransforms() {
-        // hipsLift fallback must be 0: the only shipped factory (forSmpl)
-        // passes 0, and a non-zero fallback during the load window levitates
-        // the avatar.
+        if lastMode == .overlay {
+            applyOverlayTransforms()
+            return
+        }
+        avatarContainer.isHidden = false
+
         let hipsLift = poseApplier?.hipsLift ?? 0
         let effScale = modelScale * avatarUserScale
         let yLift = (rigGroundLift + hipsLift) * effScale
@@ -273,8 +277,6 @@ final class SceneCoordinator: NSObject, SCNSceneRendererDelegate {
             avatarRot.z.degreesToRadians
         )
 
-        // Local -rigGroundLift cancels the container's yLift so the disc
-        // lands at world Y == placedWorldPos.y. +0.5 mm avoids z-fighting.
         ensureContactShadow()
         contactShadowNode?.simdPosition = SIMD3<Float>(0, -rigGroundLift + 0.0005, 0)
         contactShadowNode?.isHidden = (lastMode != .ar) || (placedWorldPos == nil)
@@ -286,6 +288,20 @@ final class SceneCoordinator: NSObject, SCNSceneRendererDelegate {
             stageRot.y.degreesToRadians,
             stageRot.z.degreesToRadians
         )
+    }
+
+    private func applyOverlayTransforms() {
+        stageContainer.isHidden = true
+        contactShadowNode?.isHidden = true
+        guard let applier = poseApplier, let root = applier.lastRootPosition else {
+            avatarContainer.isHidden = true
+            return
+        }
+        let eff = modelScale * (fitScale ?? 1)
+        avatarContainer.isHidden = false
+        avatarContainer.simdScale = SIMD3<Float>(repeating: eff)
+        avatarContainer.simdEulerAngles = .zero
+        avatarContainer.simdPosition = root - applier.bindHipsAvatarLocal * eff
     }
 }
 
