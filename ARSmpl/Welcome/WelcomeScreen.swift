@@ -22,7 +22,9 @@ struct WelcomeScreen: View {
                 Text("AR SMPL")
                     .font(.system(size: 36, weight: .bold, design: .rounded))
                     .foregroundColor(.white)
-                Text("Stream BAMM motion onto a 22-joint humanoid in your space.")
+                Text(state.backendModel.takesVideo
+                     ? "Turn a video of someone moving into a 3D avatar in your space."
+                     : "Stream BAMM motion onto a 22-joint humanoid in your space.")
                     .font(.subheadline)
                     .multilineTextAlignment(.center)
                     .foregroundColor(.white.opacity(0.75))
@@ -45,20 +47,30 @@ struct WelcomeScreen: View {
 
                 VStack(spacing: GlassTokens.containerSpacing) {
                     Button {
-                        state.arMode = true
+                        state.viewMode = .ar
                         state.hasPickedMode = true
                     } label: {
-                        modeLabel("Open in AR", system: "arkit")
+                        modeLabel("Open in AR", system: ViewMode.ar.systemImage)
                     }
                     .buttonStyle(WideGlassButtonStyle(prominent: true))
 
                     Button {
-                        state.arMode = false
+                        state.viewMode = .threeD
                         state.hasPickedMode = true
                     } label: {
-                        modeLabel("Open in 3D", system: "cube.fill")
+                        modeLabel("Open in 3D", system: ViewMode.threeD.systemImage)
                     }
                     .buttonStyle(WideGlassButtonStyle())
+
+                    if state.backendModel.takesVideo {
+                        Button {
+                            state.viewMode = .overlay
+                            state.hasPickedMode = true
+                        } label: {
+                            modeLabel("Open as overlay", system: ViewMode.overlay.systemImage)
+                        }
+                        .buttonStyle(WideGlassButtonStyle())
+                    }
                 }
                 .padding(.horizontal, 32)
 
@@ -161,13 +173,14 @@ struct WelcomeScreen: View {
         pingTask?.cancel()
         let url = state.backendUrl
         let mode = state.backendMode
+        let takesVideo = state.backendModel.takesVideo
         pingTask = Task {
             while !Task.isCancelled {
                 let ok: Bool
                 switch mode {
-                case .local:    ok = await BammClient(baseUrl: url).ping()
-                case .hosted:   ok = await HostedBammClient(baseUrl: url).ping()
-                case .onDevice: ok = true   // no network probe needed
+                case .local:    ok = takesVideo ? await HostedGemxClient(baseUrl: url).ping() : await BammClient(baseUrl: url).ping()
+                case .hosted:   ok = takesVideo ? await HostedGemxClient(baseUrl: url).ping() : await HostedBammClient(baseUrl: url).ping()
+                case .onDevice: ok = true
                 }
                 if Task.isCancelled { return }
                 await MainActor.run { self.serverReachable = ok }

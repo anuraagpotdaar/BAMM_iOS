@@ -27,6 +27,8 @@
 	</dict>
 	<key>NSCameraUsageDescription</key>
 	<string>AR SMPL needs the camera to show the body in your space.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>AR SMPL reads the video you pick so GEM-X can turn it into motion.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>AR SMPL connects to your local BAMM motion-generation server.</string>
 	<key>UIApplicationSceneManifest</key>

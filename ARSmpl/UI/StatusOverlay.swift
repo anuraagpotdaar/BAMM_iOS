@@ -6,6 +6,10 @@ struct StatusOverlay: View {
     let arMode: Bool
     let trackingFailureReason: ARCamera.TrackingState.Reason?
     let sessionState: BammSession.State
+    var takesVideo: Bool = false
+    var progressText: String? = nil
+
+    var note: String? = nil
 
     var body: some View {
         Group {
@@ -35,10 +39,13 @@ struct StatusOverlay: View {
         if arMode, !isPlaced {
             return .init(text: "Tap the floor to place the body", tint: .blue)
         }
+        if let progressText { return .init(text: progressText, tint: .blue) }
+        if let note { return .init(text: note, tint: .orange) }
+        let noun = takesVideo ? "video" : "motion"
         switch sessionState {
-        case .streaming: return .init(text: "Streaming", tint: .green)
-        case .idle:      return .init(text: "Pick a motion below", tint: nil)
-        case .stopped:   return .init(text: "Stopped — pick a motion", tint: nil)
+        case .streaming: return .init(text: takesVideo ? "Playing" : "Streaming", tint: .green)
+        case .idle:      return .init(text: "Pick a \(noun) below", tint: nil)
+        case .stopped:   return .init(text: "Stopped — pick a \(noun)", tint: nil)
         case .error:     return nil
         }
     }

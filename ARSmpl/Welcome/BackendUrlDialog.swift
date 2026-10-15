@@ -24,7 +24,7 @@ struct BackendUrlDialog: View {
                             .foregroundColor(.secondary)
                     }
                 } footer: {
-                    Text(state.backendMode.subtitle)
+                    Text(state.backendMode.subtitle(for: state.backendModel))
                 }
                 Section("Backend URL") {
                     TextField(placeholder, text: $newUrl)
@@ -69,6 +69,13 @@ struct BackendUrlDialog: View {
     }
 
     private var placeholder: String {
+        if state.backendModel.takesVideo {
+            switch state.backendMode {
+            case .local:    return "http://192.168.1.10:8000"
+            case .hosted:   return "https://your-org--gemx.modal.run"
+            case .onDevice: return "(not used — on-device runs locally)"
+            }
+        }
         switch state.backendMode {
         case .local:    return "http://192.168.1.10:7860"
         case .hosted:   return "https://your-org--bamm.modal.run"
@@ -77,6 +84,16 @@ struct BackendUrlDialog: View {
     }
 
     private var helpText: String {
+        if state.backendModel.takesVideo {
+            switch state.backendMode {
+            case .local:
+                return "GEM-X served by BAMM_API services/csgpu_serve.py (SERVICE=gemx, port 8000) on a LAN GPU box or this Mac. Use the machine's LAN IP on a physical device."
+            case .hosted:
+                return "Modal deployment URL for the GEM-X service. Uploads the clip and returns a BVH — expect roughly 1 s per video frame plus a cold start."
+            case .onDevice:
+                return "Runs the GEM-X phone pipeline (Vision person detection → VitPose int8 → denoiser → SOMA skeleton) entirely on this device."
+            }
+        }
         switch state.backendMode {
         case .local:
             return "Local Flask server. Use the Mac's LAN IP when running on a physical device — `localhost` only resolves on the simulator."

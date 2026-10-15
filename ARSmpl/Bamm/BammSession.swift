@@ -7,9 +7,49 @@ import os
 final class BammSession {
     enum State: String, Sendable { case idle, streaming, stopped, error }
 
+    let model: BackendModel
     let mode: BackendMode
     private(set) var state: State = .idle
     private(set) var lastError: String? = nil
+
+    private(set) var progressText: String? = nil
+    var isGenerating: Bool { progressText != nil }
+
+    private(set) var gemxVideoURL: URL? = nil
+    private(set) var gemxCamera: CameraMotion? = nil
+
+    @ObservationIgnored var externalClock: Bool = false
+
+    private(set) var playbackCount: Int = 0
+    private(set) var playbackFrame: Int = 0
+    private(set) var playbackFrameTime: Double = 1.0 / 30
+    var playbackPaused: Bool = false { didSet { if externalClock { overlayTransport?.setPaused(playbackPaused) } } }
+
+    var playbackLoop: Bool = true { didSet { overlayTransport?.setLoop(playbackLoop) } }
+    @ObservationIgnored private var playbackFrames: [JointFrame] = []
+    @ObservationIgnored private let seekBox = OSAllocatedUnfairLock<Int?>(initialState: nil)
+
+    @ObservationIgnored weak var overlayTransport: PlaybackTransport?
+
+    var playbackDuration: Double { Double(playbackCount) * playbackFrameTime }
+
+    func seek(frame: Int) {
+        guard playbackCount > 0 else { return }
+        let f = min(max(frame, 0), playbackCount - 1)
+        playbackFrame = f
+        seekBox.withLock { $0 = f }
+        if externalClock { overlayTransport?.seek(to: Double(f) * playbackFrameTime) }
+        else if f < playbackFrames.count { pendingFrame.set(playbackFrames[f]) }
+    }
+
+    func togglePlayback() { playbackPaused.toggle() }
+
+    func reportPlaybackFrame(_ f: Int) { if f != playbackFrame { playbackFrame = f } }
+
+    private func resetPlayback() {
+        playbackFrames = []; playbackCount = 0; playbackFrame = 0; playbackPaused = false
+        seekBox.withLock { $0 = nil }
+    }
 
     let sessionId: String = UUID().uuidString
     let pendingFrame = PendingFrameBox()
@@ -28,39 +68,57 @@ final class BammSession {
     @ObservationIgnored
     private var onDeviceTask: Task<Void, Never>?
 
-    static func local(baseUrl: String) -> BammSession {
-        BammSession(mode: .local,
+    private nonisolated let gemxClient: HostedGemxClient?
+    private var gemxTask: Task<Void, Never>?
+    @ObservationIgnored
+    private nonisolated(unsafe) var onDeviceGemxClient: OnDeviceGemxClient?
+
+    static func local(baseUrl: String, model: BackendModel = .bamm) -> BammSession {
+        BammSession(model: model, mode: .local,
                     localClient: BammClient(baseUrl: baseUrl),
-                    hostedClient: nil)
+                    hostedClient: nil, gemxClient: nil)
     }
 
-    static func hosted(baseUrl: String) -> BammSession {
-        BammSession(mode: .hosted,
+    static func hosted(baseUrl: String, model: BackendModel = .bamm) -> BammSession {
+        BammSession(model: model, mode: .hosted,
                     localClient: nil,
-                    hostedClient: HostedBammClient(baseUrl: baseUrl))
+                    hostedClient: HostedBammClient(baseUrl: baseUrl), gemxClient: nil)
     }
 
-    static func onDevice() -> BammSession {
-        BammSession(mode: .onDevice, localClient: nil, hostedClient: nil)
+    static func onDevice(model: BackendModel = .bamm) -> BammSession {
+        BammSession(model: model, mode: .onDevice, localClient: nil, hostedClient: nil, gemxClient: nil)
     }
 
-    static func build(mode: BackendMode, baseUrl: String) -> BammSession {
+    static func gemx(mode: BackendMode, baseUrl: String) -> BammSession {
+        BammSession(model: .gemx, mode: mode, localClient: nil, hostedClient: nil,
+                    gemxClient: mode == .onDevice ? nil : HostedGemxClient(baseUrl: baseUrl))
+    }
+
+    static func build(model: BackendModel, mode: BackendMode, baseUrl: String) -> BammSession {
+        if model.takesVideo { return .gemx(mode: mode, baseUrl: baseUrl) }
         switch mode {
-        case .local:    return .local(baseUrl: baseUrl)
-        case .hosted:   return .hosted(baseUrl: baseUrl)
-        case .onDevice: return .onDevice()
+        case .local:    return .local(baseUrl: baseUrl, model: model)
+        case .hosted:   return .hosted(baseUrl: baseUrl, model: model)
+        case .onDevice: return .onDevice(model: model)
         }
     }
 
-    private init(mode: BackendMode, localClient: BammClient?, hostedClient: HostedBammClient?) {
+    private init(model: BackendModel, mode: BackendMode, localClient: BammClient?,
+                 hostedClient: HostedBammClient?, gemxClient: HostedGemxClient?) {
+        self.model = model
         self.mode = mode
         self.localClient = localClient
         self.hostedClient = hostedClient
+        self.gemxClient = gemxClient
     }
 
     func clearError() { lastError = nil }
 
     func start(_ text: String) {
+        if model.takesVideo {
+            lastError = "\(model.displayName) takes a video, not text — choose a clip and tap Generate."
+            return
+        }
         switch mode {
         case .local:    startLocal(text)
         case .hosted:   startHosted(text)
@@ -71,6 +129,7 @@ final class BammSession {
     func updateText(_ text: String) { start(text) }
 
     func reset() {
+        if model.takesVideo { resetGemx(); return }
         switch mode {
         case .local:    resetLocal()
         case .hosted:   resetHosted()
@@ -81,8 +140,6 @@ final class BammSession {
     func shutdown() {
         reset()
     }
-
-    // MARK: - Local mode
 
     private func startLocal(_ text: String) {
         Task { await self.startOrOverride(text, retryDepth: 0) }
@@ -136,6 +193,7 @@ final class BammSession {
         Task.detached { try? await client?.reset(sessionId: sid) }
         pollTask?.cancel(); pollTask = nil
         playbackTask?.cancel(); playbackTask = nil
+        resetPlayback()
         queueBox.withLock { $0.removeAll() }
         pendingFrame.clear()
         state = .stopped
@@ -197,8 +255,6 @@ final class BammSession {
         }
     }
 
-    // MARK: - Hosted mode
-
     private func startHosted(_ text: String) {
         hostedTask?.cancel(); hostedTask = nil
         lastError = nil
@@ -214,23 +270,7 @@ final class BammSession {
         do {
             let bvh = try await client.generate(textPrompt: text)
             if Task.isCancelled { return }
-            let motion: BvhMotion
-            do {
-                motion = try BvhParser.parse(bvh)
-            } catch {
-                if Task.isCancelled { return }
-                print("[BammSession] BVH parse failed: \(error)")
-                self.state = .error
-                self.lastError = humanize("Parse BVH", error)
-                return
-            }
-            if motion.frames.isEmpty {
-                self.state = .error
-                self.lastError = "Generate — server returned no frames."
-                return
-            }
-            self.state = .streaming
-            await hostedPlay(motion)
+            await playBvhText(bvh, action: "Generate")
         } catch is CancellationError {
             return
         } catch {
@@ -240,24 +280,59 @@ final class BammSession {
         }
     }
 
+    private func playBvhText(_ bvh: String, action: String) async {
+        let motion: BvhMotion
+        do {
+            let t0 = Date()
+            motion = try await Task.detached(priority: .userInitiated) { try BvhParser.parse(bvh) }.value
+            NSLog("[GemxAuto] parsed %@ BVH (%d frames) in %.2f s", action, motion.frames.count, Date().timeIntervalSince(t0))
+        } catch {
+            if Task.isCancelled { return }
+            print("[BammSession] BVH parse failed: \(error)")
+            self.state = .error
+            self.lastError = humanize("Parse BVH", error)
+            self.progressText = nil
+            return
+        }
+        if motion.frames.isEmpty {
+            self.state = .error
+            self.lastError = "\(action) — server returned no frames."
+            self.progressText = nil
+            return
+        }
+        self.progressText = nil
+        self.state = .streaming
+        NSLog("[GemxAuto] playing %d frames (frameTime %.4f)", motion.frames.count, motion.frameTime)
+        await hostedPlay(motion)
+    }
+
     private func hostedPlay(_ motion: BvhMotion) async {
-        let frameNs = UInt64(max(motion.frameTime, 1.0 / 240.0) * 1_000_000_000)
+        let frameTime = max(motion.frameTime, 1.0 / 240.0)
+        let frameNs = UInt64(frameTime * 1_000_000_000)
         let frames = motion.frames
+        playbackFrames = frames; playbackCount = frames.count; playbackFrameTime = frameTime
+        playbackFrame = 0; playbackPaused = false; seekBox.withLock { $0 = nil }
         var i = 0
         while !Task.isCancelled {
-            pendingFrame.set(frames[i % frames.count])
-            i += 1
+            if let s = seekBox.withLock({ v -> Int? in let s = v; v = nil; return s }) { i = min(max(s, 0), frames.count - 1) }
+            if !externalClock && !playbackPaused {
+                pendingFrame.set(frames[i])
+                playbackFrame = i
+                i += 1
+                if i >= frames.count {
+                    if playbackLoop { i = 0 } else { i = frames.count - 1; playbackPaused = true }
+                }
+            }
             try? await Task.sleep(nanoseconds: frameNs)
         }
     }
 
     private func resetHosted() {
         hostedTask?.cancel(); hostedTask = nil
+        resetPlayback()
         pendingFrame.clear()
         state = .stopped
     }
-
-    // MARK: - On-device mode
 
     private func startOnDevice(_ text: String) {
         onDeviceTask?.cancel(); onDeviceTask = nil
@@ -281,7 +356,7 @@ final class BammSession {
     private func onDeviceFlow(client: OnDeviceBammClient?, text: String) async {
         guard let client else { return }
         do {
-            // Snapshot knobs so a slider drag mid-flight doesn't mutate the live pipeline.
+
             let sampling = await MainActor.run { GenerationSettings.shared.snapshot() }
             let motion = try await client.generate(textPrompt: text, sampling: sampling)
             if Task.isCancelled { return }
@@ -303,12 +378,125 @@ final class BammSession {
 
     private func resetOnDevice() {
         onDeviceTask?.cancel(); onDeviceTask = nil
+        resetPlayback()
         pendingFrame.clear()
+        state = .stopped
+    }
+
+    func startVideo(_ video: PickedVideo) {
+        gemxTask?.cancel(); gemxTask = nil
+        lastError = nil
+        progressText = mode == .onDevice ? "Loading models…" : "Uploading…"
+        let options = GemxSettings.shared.snapshot()
+        if mode == .onDevice {
+            if onDeviceGemxClient == nil {
+                do {
+                    onDeviceGemxClient = try OnDeviceGemxClient()
+                } catch {
+                    state = .error
+                    lastError = humanize("Init on-device GEM-X", error)
+                    progressText = nil
+                    return
+                }
+            }
+            let client = onDeviceGemxClient
+            gemxTask = Task { [weak self] in
+                guard let self else { return }
+                await self.gemxOnDeviceFlow(client: client, video: video, options: options)
+            }
+        } else {
+            let client = gemxClient
+            gemxTask = Task { [weak self] in
+                guard let self else { return }
+                await self.gemxHostedFlow(client: client, video: video, options: options)
+            }
+        }
+    }
+
+    private func gemxHostedFlow(client: HostedGemxClient?, video: PickedVideo, options: GemxOptions) async {
+        guard let client else { return }
+        do {
+            let res = try await client.generate(videoURL: video.url, options: options) { [weak self] p in
+                Task { @MainActor in
+                    guard let self, self.gemxTask?.isCancelled == false else { return }
+                    self.progressText = p.state == "uploading" ? "Uploading… \(GemxProgress.mmss(p.elapsedSeconds))" : p.text
+                }
+            }
+            if Task.isCancelled { return }
+            NSLog("[GemxAuto] hosted BVH received: %d bytes (incam: %@)", res.bvh.utf8.count, res.bvhIncam == nil ? "no" : "yes")
+            if let inc = res.bvhIncam, let cam = res.camera {
+                do {
+                    let m = try await Task.detached(priority: .userInitiated) { try BvhParser.parse(inc, somaFrame: .camera) }.value
+                    if Task.isCancelled { return }
+                    self.gemxCamera = CameraMotion(frames: m.frames, frameTime: m.frameTime, camera: cam)
+                } catch {
+                    NSLog("[GemxAuto] camera-frame BVH parse failed: %@", String(describing: error))
+                }
+            }
+            await playBvhText(res.bvh, action: "GEM-X")
+        } catch is CancellationError {
+            return
+        } catch {
+            if Task.isCancelled { return }
+            self.state = .error
+            self.lastError = humanize("GEM-X generate", error)
+            self.progressText = nil
+        }
+    }
+
+    private func gemxOnDeviceFlow(client: OnDeviceGemxClient?, video: PickedVideo, options: GemxOptions) async {
+        guard let client else { return }
+        do {
+            let t0 = Date()
+            let out = try await client.generate(videoURL: video.url, options: options) { [weak self] text in
+                NSLog("[GemxAuto] %@", text)
+                Task { @MainActor in
+                    guard let self, self.gemxTask?.isCancelled == false else { return }
+                    self.progressText = text
+                }
+            }
+            if Task.isCancelled { return }
+            let motion = out.motion
+            let timings = client.lastResult?.timings.map { "\($0.key)=\(String(format: "%.1f", $0.value))s" }.sorted().joined(separator: " ") ?? ""
+            NSLog("[GemxAuto] done: %d frames in %.1f s (%@)", motion.frames.count, Date().timeIntervalSince(t0), timings)
+            if motion.frames.isEmpty {
+                self.state = .error
+                self.lastError = "On-device GEM-X — produced zero frames."
+                self.progressText = nil
+                return
+            }
+            self.gemxCamera = out.camera
+            self.progressText = nil
+            self.state = .streaming
+            await hostedPlay(motion)
+        } catch is CancellationError {
+            return
+        } catch {
+            if Task.isCancelled { return }
+            NSLog("[GemxAuto] failed: %@", String(describing: error))
+            self.state = .error
+            self.lastError = humanize("On-device GEM-X", error)
+            self.progressText = nil
+        }
+    }
+
+    private func resetGemx() {
+        gemxTask?.cancel(); gemxTask = nil
+        resetPlayback()
+        pendingFrame.clear()
+        progressText = nil
+        gemxCamera = nil
+        gemxVideoURL = nil
         state = .stopped
     }
 }
 
-// MARK: - Error classification
+@MainActor
+protocol PlaybackTransport: AnyObject {
+    func seek(to seconds: Double)
+    func setPaused(_ paused: Bool)
+    func setLoop(_ loop: Bool)
+}
 
 private func isAlreadyRunning(_ e: Error) -> Bool {
     let m = String(describing: e).lowercased()

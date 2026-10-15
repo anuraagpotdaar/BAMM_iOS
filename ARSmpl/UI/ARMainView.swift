@@ -25,6 +25,9 @@ struct ARMainView: View {
                     if let err = state.session.lastError {
                         ErrorBar(message: err) { state.session.clearError() }
                             .transition(.move(edge: .top).combined(with: .opacity))
+                    } else if let err = state.lastImportError {
+                        ErrorBar(message: err) { state.lastImportError = nil }
+                            .transition(.move(edge: .top).combined(with: .opacity))
                     }
                     topEndCluster
                 }
@@ -78,22 +81,27 @@ struct ARMainView: View {
             }
             .presentationDetents([.medium, .large])
         }
-        .onChange(of: state.arMode) { _, _ in
+        .onChange(of: state.viewMode) { _, mode in
             anchorIsPlaced = false
             trackingFailureReason = nil
+
+            state.session.externalClock = (mode == .overlay)
         }
     }
 
     @ViewBuilder
     private var sceneView: some View {
-        if state.arMode {
+        switch state.viewMode {
+        case .ar:
             ARSceneViewRepresentable(
                 state: state,
                 trackingFailureReason: $trackingFailureReason,
                 anchorIsPlaced: $anchorIsPlaced
             )
-        } else {
+        case .threeD:
             SceneKit3DViewRepresentable(state: state)
+        case .overlay:
+            OverlaySceneViewRepresentable(state: state)
         }
     }
 
@@ -120,18 +128,30 @@ struct ARMainView: View {
                 .buttonStyle(CapsuleGlassButtonStyle())
                 .accessibilityLabel("Rig: \(state.rigKind.displayName)")
 
-                Button {
-                    state.colorIndex = (state.colorIndex + 1) % BODY_COLORS.count
+                Menu {
+                    ForEach(Array(BODY_COLORS.enumerated()), id: \.offset) { i, entry in
+                        Button {
+                            state.colorIndex = i
+                        } label: {
+                            if i == state.colorIndex {
+                                Label(entry.label, systemImage: "checkmark")
+                            } else {
+                                Text(entry.label)
+                            }
+                        }
+                    }
                 } label: {
                     HStack(spacing: 8) {
                         GlassColorSwatch(color: BODY_COLORS[state.colorIndex].color)
                         Text(BODY_COLORS[state.colorIndex].label)
                     }
+                } primaryAction: {
+                    state.colorIndex = (state.colorIndex + 1) % BODY_COLORS.count
                 }
                 .buttonStyle(CapsuleGlassButtonStyle(
                     tint: BODY_COLORS[state.colorIndex].color
                 ))
-                .accessibilityLabel("Color: \(BODY_COLORS[state.colorIndex].label)")
+                .accessibilityLabel("Avatar color: \(BODY_COLORS[state.colorIndex].label)")
             }
         }
     }
@@ -158,7 +178,16 @@ struct ARMainView: View {
             }
             .padding(.horizontal, GlassTokens.edgeInset)
 
-            if isLandscape {
+            if state.session.state == .streaming, state.session.playbackCount > 0 {
+                PlaybackScrubber(session: state.session)
+                    .padding(.horizontal, GlassTokens.edgeInset)
+            }
+
+            if state.backendModel.takesVideo {
+                if isLandscape { statusPill }
+                videoRow
+                    .padding(.horizontal, GlassTokens.edgeInset)
+            } else if isLandscape {
                 statusPill
 
                 HStack(spacing: GlassTokens.containerSpacing) {
@@ -169,8 +198,7 @@ struct ARMainView: View {
                         fireMotion(motion)
                     }
                     .frame(maxWidth: .infinity)
-                    // Strip's ScrollView uses scrollClipDisabled; clip back to
-                    // this column so chips don't spill onto the text field.
+
                     .clipped()
                 }
                 .padding(.horizontal, GlassTokens.edgeInset)
@@ -191,8 +219,44 @@ struct ARMainView: View {
             isPlaced: anchorIsPlaced || !state.arMode,
             arMode: state.arMode,
             trackingFailureReason: trackingFailureReason,
-            sessionState: state.session.state
+            sessionState: state.session.state,
+            takesVideo: state.backendModel.takesVideo,
+            progressText: state.session.progressText,
+            note: overlayNote
         )
+    }
+
+    private var overlayNote: String? {
+        guard state.viewMode == .overlay, state.session.state == .streaming, state.session.gemxCamera == nil else { return nil }
+        return "No camera-frame motion — update the GEM-X server"
+    }
+
+    private var videoRow: some View {
+        HStack(spacing: GlassTokens.containerSpacing) {
+            VideoPickerButton(picked: $state.pickedVideo) { msg in
+                state.session.clearError()
+                state.lastImportError = msg
+            }
+
+            Button {
+                fireVideo()
+            } label: {
+                if state.session.isGenerating {
+                    ProgressView().tint(.white).controlSize(.small)
+                } else {
+                    Image(systemName: "play.fill")
+                }
+            }
+            .buttonStyle(CircularGlassButtonStyle(prominent: true))
+            .accessibilityLabel("Generate motion from video")
+            .disabled(state.pickedVideo == nil || state.session.isGenerating)
+        }
+    }
+
+    private func fireVideo() {
+        guard let video = state.pickedVideo else { return }
+        state.session.startVideo(video)
+        state.hasStartedSession = true
     }
 
     private var inputRow: some View {

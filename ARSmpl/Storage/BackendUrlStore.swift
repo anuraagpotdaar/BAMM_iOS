@@ -65,9 +65,11 @@ final class BackendUrlStore: @unchecked Sendable {
         switch (model, mode) {
         case (.bamm, .local):    return "http://localhost:7860"
         case (.mmm,  .local):    return "http://localhost:7860"
+        case (.gemx, .local):    return "http://localhost:8000"
         case (.bamm, .hosted):   return "https://example.modal.run"
         case (.mmm,  .hosted):   return "https://example.modal.run"
-        case (_,     .onDevice): return ""  // on-device: no URL needed
+        case (.gemx, .hosted):   return "https://example.modal.run"
+        case (_,     .onDevice): return ""
         }
     }
 
@@ -78,7 +80,6 @@ final class BackendUrlStore: @unchecked Sendable {
         "backend.recents.\(model.rawValue).\(mode.rawValue)"
     }
 
-    /// Pre-split keys land in the BAMM slots, but never clobber a new value.
     private func migrateLegacyIfNeeded() {
         let bammLocalUrlKey  = urlKey(.bamm, .local)
         let bammHostedUrlKey = urlKey(.bamm, .hosted)

@@ -10,11 +10,19 @@ struct SettingsSheet: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("View") {
-                    Toggle("Use 3D mode", isOn: Binding(
-                        get: { !state.arMode },
-                        set: { use3d in state.arMode = !use3d }
-                    ))
+                Section {
+                    Picker("View", selection: $state.viewMode) {
+                        ForEach(ViewMode.available(for: state.backendModel)) { mode in
+                            Text(mode.displayName).tag(mode)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                } header: {
+                    Text("View")
+                } footer: {
+                    if state.backendModel.takesVideo {
+                        Text("Overlay plays the clip with the avatar drawn over the person. Pick the avatar color from the swatch button on the main screen.")
+                    }
                 }
                 Section("Avatar rig") {
                     HStack {
@@ -24,7 +32,7 @@ struct SettingsSheet: View {
                     }
                     Button("Switch rig") { state.rigKind = state.rigKind.cycled() }
                 }
-                if !state.arMode {
+                if state.viewMode == .threeD {
                     Section("Stage scene") {
                         HStack {
                             Text("Current")
@@ -68,12 +76,14 @@ struct SettingsSheet: View {
                 } header: {
                     Text("Backend")
                 } footer: {
-                    Text("\(state.backendModel.displayName) · \(state.backendMode.subtitle)")
+                    Text("\(state.backendModel.displayName) · \(state.backendMode.subtitle(for: state.backendModel))")
                 }
-                if state.backendMode == .onDevice {
+                if state.backendModel.takesVideo {
+                    GemxSection(mode: state.backendMode)
+                } else if state.backendMode == .onDevice {
                     OnDeviceSamplingSection()
                 }
-                if !state.arMode {
+                if state.viewMode == .threeD {
                     Section("Adjustments") {
                         Button("Stage adjust", action: onOpenStageEditor)
                         Button("Avatar adjust", action: onOpenAvatarEditor)
@@ -86,6 +96,106 @@ struct SettingsSheet: View {
                 }
             }
             .navigationTitle("Settings")
+        }
+    }
+}
+
+private struct GemxSection: View {
+    let mode: BackendMode
+    @Bindable private var settings = GemxSettings.shared
+
+    var body: some View {
+        Section {
+            Toggle("Static camera", isOn: Binding(
+                get: { settings.staticCam },
+                set: { settings.staticCam = $0; settings.save() }
+            ))
+            .disabled(mode == .onDevice)
+            Text(mode == .onDevice
+                 ? "On-device always assumes a fixed camera (tripod or held still)."
+                 : "Off lets the server estimate camera motion for hand-held clips.")
+                .font(.caption2)
+                .foregroundColor(.secondary)
+            if mode != .onDevice {
+                Picker("Denoiser", selection: Binding(
+                    get: { settings.hostedDenoiser },
+                    set: { settings.hostedDenoiser = $0; settings.save() }
+                )) {
+                    ForEach(GemxHostedDenoiser.allCases) { d in Text(d.displayName).tag(d) }
+                }
+                Toggle("Skip image features (faster)", isOn: Binding(
+                    get: { settings.noImgfeat },
+                    set: { settings.noImgfeat = $0; settings.save() }
+                ))
+                Text("Drops SAM-3D-Body (≈75% of server time). Poses stay plausible but ~9 cm further from the full model.")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+            }
+        } header: {
+            Text("GEM-X")
+        } footer: {
+            Text("Video → 3D motion on the SOMA skeleton. Clips: one person, mostly in frame, ≤ 30 s at 30 fps work best.")
+        }
+        if mode == .onDevice {
+            Section {
+                Picker("Denoiser", selection: Binding(
+                    get: { settings.tier },
+                    set: { settings.tier = $0; settings.save() }
+                )) {
+                    ForEach(GemxTier.allCases) { t in Text(t.displayName).tag(t) }
+                }
+                .pickerStyle(.segmented)
+                Picker("2D pose model on", selection: Binding(
+                    get: { settings.poseCompute },
+                    set: { settings.poseCompute = $0; settings.save() }
+                )) {
+                    ForEach(GemxPoseCompute.allCases) { c in Text(c.displayName).tag(c) }
+                }
+                .pickerStyle(.segmented)
+                Text("VitPose as a CoreML model (int8 weights, 810 MB): ≈45 ms/frame on an M2 Neural Engine vs 330 ms for the old CPU int8 model, and 0.4 px from the fp32 model instead of 5 px (82 ms/frame on an iPhone 16 Pro Max). CPU is the fallback, about 3× slower.")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                Toggle("Flip test", isOn: Binding(
+                    get: { settings.flipTest },
+                    set: { settings.flipTest = $0; settings.save() }
+                ))
+                Text("Also runs the mirrored crop and averages, like the server (2× pose time).")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Text("2D pose every")
+                        Spacer()
+                        Text("\(settings.sampleStep) frame\(settings.sampleStep == 1 ? "" : "s")")
+                            .font(.footnote.monospaced())
+                            .foregroundColor(.secondary)
+                    }
+                    Slider(value: Binding(
+                        get: { Double(settings.sampleStep) },
+                        set: { settings.sampleStep = Int($0.rounded()) }
+                    ), in: 1...6, step: 1) {
+                        Text("2D pose stride")
+                    } onEditingChanged: { editing in if !editing { settings.save() } }
+                    Text("The ViT-H pose model is the slow stage; 3 = run it on every 3rd frame of a 30 fps clip and interpolate (≈7–9 mm vs every frame). 1 = every frame. Scaled to the clip's frame rate; motion is always solved on a 30 fps timeline.")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
+                Picker("Max video side", selection: Binding(
+                    get: { settings.maxSide },
+                    set: { settings.maxSide = $0; settings.save() }
+                )) {
+                    Text("540 px").tag(540)
+                    Text("720 px").tag(720)
+                    Text("1080 px").tag(1080)
+                }
+                Text("Quality is nearly independent of resolution down to ~540 px; smaller decodes faster and uses less memory.")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+            } header: {
+                Text("On-device GEM-X")
+            } footer: {
+                Text("Bundled: VitPose int8 (877 MB) + no-image-feature denoiser. Expect ~1–4 min per 10 s clip depending on the phone.")
+            }
         }
     }
 }

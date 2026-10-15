@@ -15,6 +15,35 @@ struct ContentView: View {
             BackendUrlDialog(state: appState)
         }
         .animation(.easeInOut(duration: 0.2), value: appState.hasPickedMode)
+        .onAppear { appState.runAutoVideoIfRequested() }
+    }
+}
+
+enum ViewMode: String, CaseIterable, Identifiable, Sendable {
+    case ar
+    case threeD = "3d"
+    case overlay
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .ar:      return "AR"
+        case .threeD:  return "3D"
+        case .overlay: return "Overlay"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .ar:      return "arkit"
+        case .threeD:  return "cube.fill"
+        case .overlay: return "person.and.background.dotted"
+        }
+    }
+
+    static func available(for model: BackendModel) -> [ViewMode] {
+        model.takesVideo ? [.ar, .threeD, .overlay] : [.ar, .threeD]
     }
 }
 
@@ -22,7 +51,8 @@ struct ContentView: View {
 @MainActor
 final class AppState {
     var hasPickedMode: Bool = false
-    var arMode: Bool = true
+    var viewMode: ViewMode = .ar
+    var arMode: Bool { viewMode == .ar }
     var showUrlDialog: Bool = false
 
     var rigKind: RigKind = .smpl {
@@ -45,9 +75,12 @@ final class AppState {
     var backendMode: BackendMode = BackendUrlStore.shared.mode
     var backendUrl: String = BackendUrlStore.shared.current
 
+    var pickedVideo: PickedVideo? = nil
+    var lastImportError: String? = nil
+
     var hasStartedSession: Bool = false
     var hasFirstFrame: Bool = false
-    /// Read & cleared by SceneCoordinator to re-arm the LoadingOverlay after reset.
+
     var firstFrameNeedsReset: Bool = false
 
     var session: BammSession
@@ -70,22 +103,21 @@ final class AppState {
     var stagePosZ: Float = 0
 
     init() {
-        // Read the store directly — observed accessors touch other not-yet-init
-        // stored properties through the @Observable macro's expansion.
+
         let model = BackendUrlStore.shared.model
         let mode = BackendUrlStore.shared.mode
         let url = BackendUrlStore.shared.url(model: model, mode: mode)
         self.backendModel = model
         self.backendMode = mode
         self.backendUrl = url
-        self.session = BammSession.build(mode: mode, baseUrl: url)
+        self.session = BammSession.build(model: model, mode: mode, baseUrl: url)
         loadAvatarTransform()
         loadStageTransform()
     }
 
     func rebuildSession() {
         session.shutdown()
-        session = BammSession.build(mode: backendMode, baseUrl: backendUrl)
+        session = BammSession.build(model: backendModel, mode: backendMode, baseUrl: backendUrl)
     }
 
     func setBackendModel(_ model: BackendModel) {
@@ -93,6 +125,7 @@ final class AppState {
         backendModel = model
         BackendUrlStore.shared.model = model
         backendUrl = BackendUrlStore.shared.url(model: model, mode: backendMode)
+        if !ViewMode.available(for: model).contains(viewMode) { viewMode = .threeD }
         rebuildSession()
     }
 
@@ -166,5 +199,56 @@ final class AppState {
 
     func saveModelScale() {
         TransformStore.shared.saveOne(avatarKey(rigKind, "model_scale"), modelScale)
+    }
+
+    func runAutoVideoIfRequested() {
+        let d = UserDefaults.standard
+
+        if let plan = d.string(forKey: "gemxBench"), !plan.isEmpty {
+            let resume = d.string(forKey: "gemxBenchResume").flatMap { $0.isEmpty ? nil : $0 }
+            Task { await GemxBenchmark.run(kind: plan, resume: resume) { line in NSLog("%@", line); print(line) } }
+            return
+        }
+        guard var path = d.string(forKey: "gemxAutoVideo"), !path.isEmpty else { return }
+
+        if !path.hasPrefix("/"), let u = Bundle.main.url(forResource: (path as NSString).deletingPathExtension, withExtension: "mp4", subdirectory: "BenchClips") { path = u.path }
+        let mode = BackendMode(rawValue: d.string(forKey: "gemxAutoMode") ?? "onDevice") ?? .onDevice
+        setBackendModel(.gemx)
+        setBackendMode(mode)
+        if let url = d.string(forKey: "gemxAutoUrl"), !url.isEmpty {
+            BackendUrlStore.shared.setUrl(url, model: .gemx, mode: mode)
+            backendUrl = url
+            rebuildSession()
+        }
+        viewMode = ViewMode(rawValue: d.string(forKey: "gemxAutoView") ?? "3d") ?? .threeD
+        if let r = d.string(forKey: "gemxAutoRig"), let rig = RigKind(rawValue: r) { rigKind = rig }
+
+        if let s = d.object(forKey: "gemxAutoStep") as? Int, (1...6).contains(s) { GemxSettings.shared.sampleStep = s }
+        if d.object(forKey: "gemxAutoFlip") != nil { GemxSettings.shared.flipTest = d.bool(forKey: "gemxAutoFlip") }
+        if viewMode == .ar { viewMode = .threeD }
+        hasPickedMode = true
+        let video = PickedVideo(url: URL(fileURLWithPath: path), name: (path as NSString).lastPathComponent)
+        pickedVideo = video
+        NSLog("[GemxAuto] starting \(mode.rawValue) on \(path)")
+        session.startVideo(video)
+        hasStartedSession = true
+
+        let cycle = d.integer(forKey: "gemxAutoCycle")
+        guard cycle > 0 else { return }
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            while self.session.state != .streaming { try? await Task.sleep(nanoseconds: 500_000_000) }
+            let order: [ViewMode] = [.threeD, .ar, .overlay, .threeD, .overlay, .ar, .threeD]
+            for (k, v) in order.enumerated() {
+                try? await Task.sleep(nanoseconds: UInt64(cycle) * 1_000_000_000)
+                self.viewMode = v
+                NSLog("[GemxAuto] view → \(v.rawValue)")
+                if k == 4 {
+                    try? await Task.sleep(nanoseconds: 2_000_000_000)
+                    NSLog("[GemxAuto] re-running the clip")
+                    self.session.startVideo(video)
+                }
+            }
+        }
     }
 }
