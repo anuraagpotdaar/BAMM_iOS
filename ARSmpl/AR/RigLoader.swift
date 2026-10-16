@@ -4,8 +4,6 @@ import UIKit
 
 final class RigLoader {
 
-    /// Per-material original diffuse contents, keyed by material identity, so
-    /// the color picker's "Default" can restore them.
     private(set) var originalDiffuse: [ObjectIdentifier: Any] = [:]
 
     struct Loaded {
@@ -21,13 +19,8 @@ final class RigLoader {
             label: "rig:\(rig.rawValue)"
         )
 
-        // USDZ exports often bake an SCNAnimation on bone nodes that would
-        // overwrite our per-frame pose writes; strip them before bind capture.
         BoneBinder.removeAllAnimations(rigRoot)
 
-        // SceneKit's USDZ importer occasionally enables OpenSubdiv refinement.
-        // Mixamo Vanguard has valence > 12 vertices which exceeds the GPU
-        // ceiling and aborts rendering, so force level 0.
         disableSubdivision(rigRoot)
 
         captureOriginalDiffuse(rigRoot)
@@ -35,9 +28,6 @@ final class RigLoader {
         let namedNodes = BoneBinder.indexByName(rigRoot)
         BoneBinder.logSkin(rigRoot, label: "rig:\(rig.rawValue)")
 
-        // USDZ imports duplicate the skeleton: the named "Pelvis"/"L_Hip"/…
-        // chain is decoupled from the anonymous bones SCNSkinner actually
-        // deforms. Remap so each alias points at the live skinner bone.
         let skinner = BoneBinder.firstSkinner(rigRoot)
         let bonesByName = BoneBinder.remapToSkinnerBones(namedNodes, skinner: skinner)
 
@@ -62,7 +52,7 @@ final class RigLoader {
     }
 
     private func loadAsWrapper(resource: String, ext: String, label: String) throws -> SCNNode {
-        // Models live under "Models/" (folder reference); fall back to flat.
+
         let url: URL
         if let nested = Bundle.main.url(forResource: resource, withExtension: ext, subdirectory: "Models") {
             url = nested
@@ -114,6 +104,8 @@ final class RigLoader {
 
     func applyTint(_ root: SCNNode, color: BodyColor, restoreOriginal: Bool) {
         forEachMaterial(root) { mat in
+
+            if let n = mat.name?.lowercased(), n.contains("outline") { return }
             if restoreOriginal {
                 let id = ObjectIdentifier(mat)
                 if let original = originalDiffuse[id] {
@@ -134,8 +126,6 @@ final class RigLoader {
         }
     }
 
-    /// Returns 0 if no geometry found — leaves the avatar at the floor anchor,
-    /// safer than guessing a lift.
     private func lowestMeshYInWrapper(_ wrapper: SCNNode) -> Float {
         var minY: Float = .greatestFiniteMagnitude
         func walk(_ node: SCNNode) {

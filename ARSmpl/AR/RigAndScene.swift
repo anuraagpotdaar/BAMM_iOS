@@ -2,13 +2,22 @@ import Foundation
 import SwiftUI
 
 enum RigKind: String, CaseIterable, Identifiable, Sendable {
-    case smpl, soldier
+    case smpl, soldier, miyako
     var id: String { rawValue }
-    var displayName: String { self == .smpl ? "SMPL" : "Soldier" }
-    var resourceName: String { self == .smpl ? "smpl" : "soldier" }
+    var displayName: String {
+        switch self {
+        case .smpl:    return "SMPL"
+        case .soldier: return "Soldier"
+        case .miyako:  return "Miyako"
+        }
+    }
+    var resourceName: String { rawValue }
     var resourceExtension: String { "usdz" }
 
-    func cycled() -> RigKind { self == .smpl ? .soldier : .smpl }
+    func cycled() -> RigKind {
+        let all = RigKind.allCases
+        return all[(all.firstIndex(of: self)! + 1) % all.count]
+    }
 }
 
 enum SceneKind: String, CaseIterable, Identifiable, Sendable {
@@ -22,7 +31,6 @@ enum SceneKind: String, CaseIterable, Identifiable, Sendable {
     func cycled() -> SceneKind { self == .runway ? .gallery : .runway }
 }
 
-/// Index 0 ("Default") restores the original textures rather than tinting.
 struct BodyColor: Sendable {
     let label: String
     let color: Color
