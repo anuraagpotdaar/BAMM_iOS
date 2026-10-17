@@ -46,7 +46,6 @@ struct BammClient: Sendable {
         try await postEmpty("/api/reset", body: ["session_id": sessionId])
     }
 
-    /// Returns `[]` while the worker is warming up (server replies `status="waiting"`).
     func getFrame(sessionId: String, count: Int = 8) async throws -> [JointFrame] {
         guard let url = URL(string: "\(baseUrl)/api/get_frame?session_id=\(sessionId)&count=\(count)") else {
             throw BammError.badUrl
@@ -72,7 +71,7 @@ struct BammClient: Sendable {
                 flat[i * 3 + 1] = floatFrom(xyz[1])
                 flat[i * 3 + 2] = floatFrom(xyz[2])
             }
-            return JointFrame(flat)
+            return JointFrame.fromHumanml22(flat)
         }
     }
 

@@ -183,7 +183,7 @@ final class OnDeviceBammClient {
         var ids = motionIds
         let zerosCond = [Float](repeating: 0, count: BammConst.clipDim)
         let ntoken = BammConst.numTokens + 1
-        // trans_forward prepends cond → output time dim is motionIds.count + 1, not BLOCK_SIZE.
+
         let tCol = motionIds.count + 1
         let invT = max(1e-3, 1.0 / sampling.temperature)
         for k in 0..<BammConst.seqLen {
@@ -256,7 +256,7 @@ final class OnDeviceBammClient {
             let qids = [Int64(i)]
             let zerosCond = [Float](repeating: 0, count: BammConst.clipDim)
             let mc = try makeFloat32Tensor(historySum, shape: [1, NSNumber(value: T), NSNumber(value: BammConst.codeDim)])
-            // padding_mask is int64 in the re-exported residual ONNX — Swift ORT binding lacks .bool.
+
             let pmInts: [Int64] = paddingMask.map { Int64($0 ? 1 : 0) }
             let pm = try makeInt64Tensor(pmInts, shape: [1, NSNumber(value: T)])
             let qt = try makeInt64Tensor(qids, shape: [1])
@@ -300,7 +300,6 @@ final class OnDeviceBammClient {
             allQ.append(sampled)
         }
 
-        // resPadId → -1 for VQ: ResidualVQ.get_codes_from_indices masks -1 to zero.
         var out = [Int32](repeating: 0, count: T * BammConst.numQuantizers)
         for t in 0..<T {
             for q in 0..<BammConst.numQuantizers {
@@ -396,9 +395,6 @@ final class OnDeviceBammClient {
         return m
     }
 
-    // motion272 layout: [0,2) root vel xz, [2,8) heading 6D, [8,74) joint xyz heading-aligned.
-    // headings[f] = local→world (our column-major rel is already the transpose of Python's
-    // row-major matrix; post-multiplying gives inv_heading directly — apply without transpose).
     private static func motion272ToWorldJoints(_ motion: [Float], totalFrames: Int, useFrames: Int) -> [JointFrame] {
         let nF = useFrames
         let dim = BammConst.dimPose
@@ -443,7 +439,7 @@ final class OnDeviceBammClient {
                 xyz[j*3 + 1] = world.y
                 xyz[j*3 + 2] = world.z
             }
-            out.append(JointFrame(xyz))
+            out.append(JointFrame.fromHumanml22(xyz))
         }
         return out
     }
