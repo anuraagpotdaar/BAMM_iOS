@@ -3,8 +3,6 @@ import SceneKit
 import ARKit
 import UIKit
 
-/// Uses the AR session for raycasting only; writes `simdWorldTransform` directly
-/// instead of going through ARAnchor (anchor reparenting timing was unreliable).
 struct ARSceneViewRepresentable: UIViewRepresentable {
     @Bindable var state: AppState
     @Binding var trackingFailureReason: ARCamera.TrackingState.Reason?
@@ -100,9 +98,6 @@ final class ARCoordinator: NSObject, ARSCNViewDelegate, ARSessionDelegate, UIGes
         scene.placeAvatar(at: worldPos)
     }
 
-    /// Avoids `.estimatedPlane` (guesses surfaces, locks avatar at wrong Y).
-    /// Geometry hits first so taps don't land on infinite-plane extensions of
-    /// a coffee-table; lowest-Y tie-break picks the floor over a table plane.
     private func raycast(at point: CGPoint) -> ARRaycastResult? {
         guard let view = arView else { return nil }
         if let q = view.raycastQuery(from: point, allowing: .existingPlaneGeometry, alignment: .horizontal) {

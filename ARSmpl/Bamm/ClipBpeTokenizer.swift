@@ -1,6 +1,3 @@
-// Swift port of clip.simple_tokenizer (CLIP BPE). Reads bpe_simple_vocab_16e6.txt.gz
-// from Resources/Bamm2 and emits (1, 77) Int32 tokens.
-
 import Foundation
 import Compression
 
@@ -44,7 +41,7 @@ final class ClipBpeTokenizer {
     }
 
     init(bundleResourceName: String = "bpe_simple_vocab_16e6", ext: String = "txt.gz") throws {
-        // Resources/Bamm2 is a folder reference — try subdirectory first, fall back to flat root.
+
         let url = Bundle.main.url(forResource: bundleResourceName, withExtension: ext, subdirectory: "Bamm2")
             ?? Bundle.main.url(forResource: bundleResourceName, withExtension: ext)
         guard let url else { throw BpeError.vocabMissing }
@@ -107,7 +104,6 @@ final class ClipBpeTokenizer {
         return out
     }
 
-    // Walk left-to-right, longest pattern match wins.
     private func regexFindAll(in text: String) -> [String] {
         var out: [String] = []
         let ns = text as NSString
@@ -149,7 +145,7 @@ final class ClipBpeTokenizer {
             return result
         }
         while true {
-            // Find the lowest-rank bigram
+
             var best: (String, String)? = nil
             var bestRank = Int.max
             for (a, b) in pairs {
@@ -232,7 +228,6 @@ final class ClipBpeTokenizer {
         return (be, bd)
     }
 
-    // Strip gzip header + CRC trailer; Compression framework wants raw DEFLATE.
     private static func gunzipToString(_ data: Data) throws -> String {
         guard data.count > 18, data[0] == 0x1f, data[1] == 0x8b else {
             throw BpeError.vocabRead("not gzip")

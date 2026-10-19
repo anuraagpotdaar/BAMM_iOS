@@ -2,7 +2,7 @@ import SwiftUI
 
 struct ScaleFAB: View {
     @Binding var expanded: Bool
-    @Binding var percent: Float    // 1.0 = 100%
+    @Binding var percent: Float
 
     var body: some View {
         HStack(spacing: GlassTokens.containerSpacing) {

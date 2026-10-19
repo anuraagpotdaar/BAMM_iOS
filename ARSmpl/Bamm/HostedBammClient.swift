@@ -29,7 +29,6 @@ struct HostedBammClient: Sendable {
         }
     }
 
-    /// Falls back to `/generate` on 404 (MMM doesn't expose `/generate-motion`).
     func generate(textPrompt: String, temperature: Float = 1.0) async throws -> String {
         let prompt = textPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !prompt.isEmpty else { throw BammError.http(status: 0, body: "Empty prompt") }
@@ -66,7 +65,6 @@ struct HostedBammClient: Sendable {
         return (http.statusCode, data)
     }
 
-    /// Accepts raw BVH (BAMM-style) or JSON with `bvh_base64` (MMM-style).
     private func decodeBvh(from data: Data, status: Int) throws -> String {
         guard let text = String(data: data, encoding: .utf8) else {
             throw BammError.http(status: status, body: "Non-text response")

@@ -56,10 +56,6 @@ enum BoneBinder {
         }
     }
 
-    /// USDZ imports produce two parallel hierarchies for skinned rigs: a named
-    /// chain (Pelvis, L_Hip, …) and an anonymous skinner-bone chain (n0, n1, …)
-    /// that actually drives mesh deformation. Pose writes to the named nodes
-    /// do nothing — remap each name to the closest-position skinner bone.
     static func remapToSkinnerBones(
         _ bonesByName: [String: SCNNode],
         skinner: SCNSkinner?
@@ -96,8 +92,7 @@ enum BoneBinder {
                     best = bp
                 }
             }
-            // 1 cm threshold — reject larger gaps to avoid snapping unrelated
-            // nodes (the named tree also contains mesh/shape parents).
+
             if let best, bestDist < 0.01 * 0.01 {
                 out[name] = best.node
                 remapped += 1
@@ -109,8 +104,6 @@ enum BoneBinder {
         return out
     }
 
-    /// USDZ exports often embed an animation that would overwrite our
-    /// per-frame pose writes; strip it before bind-pose capture.
     static func removeAllAnimations(_ root: SCNNode) {
         var stripped = 0
         walk(root) { node in

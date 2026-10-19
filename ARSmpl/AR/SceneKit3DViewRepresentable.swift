@@ -20,8 +20,7 @@ struct SceneKit3DViewRepresentable: UIViewRepresentable {
         view.preferredFramesPerSecond = 60
         view.delegate = context.coordinator
         view.autoenablesDefaultLighting = true
-        // SCNView pauses its loop when nothing in the scene-graph animates;
-        // direct simdTransform writes don't trigger it, so force continuous.
+
         view.isPlaying = true
         view.rendersContinuously = true
 

@@ -15,7 +15,7 @@ final class GenerationSettings {
     var topPMask:    Float = 1.0
     var topPRes:     Float = 0.9
     var deterministic: Bool = false
-    var motionLength: Int = 0   // 0 = use length estimator; 1..49 = manual tokens.
+    var motionLength: Int = 0
 
     static let shared = GenerationSettings.load()
 

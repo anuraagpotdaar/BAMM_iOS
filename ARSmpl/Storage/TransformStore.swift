@@ -1,7 +1,5 @@
 import Foundation
 
-/// Keys are namespaced by the caller (e.g. `avatar_smpl_rot_x`) so each rig/scene
-/// keeps its own values.
 final class TransformStore: @unchecked Sendable {
     static let shared = TransformStore()
 

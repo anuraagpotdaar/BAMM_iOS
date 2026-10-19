@@ -1,7 +1,5 @@
 import SwiftUI
 
-// MARK: - Design tokens
-
 enum GlassTokens {
     static let controlHeight: CGFloat = 44
     static let containerSpacing: CGFloat = 8
@@ -9,8 +7,6 @@ enum GlassTokens {
     static let pressedOpacity: Double = 0.85
     static let cornerRadius: CGFloat = 18
 }
-
-// MARK: - Material backdrop helpers
 
 private struct MaterialCapsule: ViewModifier {
     var tint: Color? = nil
@@ -63,8 +59,6 @@ private struct MaterialRect: ViewModifier {
     }
 }
 
-// MARK: - Capsule glass button
-
 struct CapsuleGlassButtonStyle: ButtonStyle {
     var tint: Color? = nil
     var prominent: Bool = false
@@ -84,8 +78,6 @@ struct CapsuleGlassButtonStyle: ButtonStyle {
     }
 }
 
-// MARK: - Circular glass icon button
-
 struct CircularGlassButtonStyle: ButtonStyle {
     var size: CGFloat = GlassTokens.controlHeight
     var tint: Color? = nil
@@ -104,8 +96,6 @@ struct CircularGlassButtonStyle: ButtonStyle {
     }
 }
 
-// MARK: - Wide glass button (welcome / mode picker)
-
 struct WideGlassButtonStyle: ButtonStyle {
     var prominent: Bool = false
     func makeBody(configuration: Configuration) -> some View {
@@ -122,8 +112,6 @@ struct WideGlassButtonStyle: ButtonStyle {
     }
 }
 
-// MARK: - Status pill (non-interactive)
-
 struct GlassPill: View {
     let text: String
     var tint: Color? = nil
@@ -136,8 +124,6 @@ struct GlassPill: View {
             .modifier(MaterialCapsule(tint: tint))
     }
 }
-
-// MARK: - Color swatch used inside the color-picker button
 
 struct GlassColorSwatch: View {
     let color: Color
@@ -153,8 +139,6 @@ struct GlassColorSwatch: View {
             .shadow(color: color.opacity(0.4), radius: 3, y: 1)
     }
 }
-
-// MARK: - Glass text field surface
 
 struct GlassFieldBackground: ViewModifier {
     func body(content: Content) -> some View {

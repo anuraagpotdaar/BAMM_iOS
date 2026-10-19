@@ -1,7 +1,6 @@
 import Foundation
 import os
 
-/// Single-slot atomic for the latest frame. Render reads via `take()`, drops backlog.
 final class PendingFrameBox: @unchecked Sendable {
     private let lock = OSAllocatedUnfairLock<JointFrame?>(initialState: nil)
 
