@@ -152,7 +152,14 @@ private struct GemxSection: View {
                     ForEach(GemxPoseCompute.allCases) { c in Text(c.displayName).tag(c) }
                 }
                 .pickerStyle(.segmented)
-                Text("VitPose as a CoreML model (int8 weights, 810 MB): ≈45 ms/frame on an M2 Neural Engine vs 330 ms for the old CPU int8 model, and 0.4 px from the fp32 model instead of 5 px (82 ms/frame on an iPhone 16 Pro Max). CPU is the fallback, about 3× slower.")
+                Picker("ViTPose precision", selection: Binding(
+                    get: { settings.posePrecision },
+                    set: { settings.posePrecision = $0; settings.save() }
+                )) {
+                    ForEach(GemxPosePrecision.allCases) { p in Text(p.displayName).tag(p) }
+                }
+                .pickerStyle(.segmented)
+                Text("W8 uses the original model. W8A8 provides faster inference with some pose differences.")
                     .font(.caption2)
                     .foregroundColor(.secondary)
                 Toggle("Flip test", isOn: Binding(
@@ -194,7 +201,7 @@ private struct GemxSection: View {
             } header: {
                 Text("On-device GEM-X")
             } footer: {
-                Text("Bundled: VitPose int8 (877 MB) + no-image-feature denoiser. Expect ~1–4 min per 10 s clip depending on the phone.")
+                Text("Runs on this device using the selected ViTPose model and denoiser.")
             }
         }
     }

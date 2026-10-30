@@ -1,5 +1,6 @@
 # Generated Xcode project — xcodegen recreates from project.yml
 *.xcodeproj/
+project.local.yml
 
 # Xcode build output
 build/
