@@ -41,6 +41,24 @@ final class OnDeviceGemxClient {
     private var denoiserTier: GemxTier?
     private(set) var lastResult: RunResult?
 
+    struct ComparisonEvent: Codable {
+        let phase: String
+        let seconds: Double
+        let sourceFrame: Int?
+        let completedSamples: Int?
+    }
+    // Enabled only by the benchmark; timestamps are recorded without file I/O.
+    var comparisonEpochNanoseconds: UInt64?
+    private(set) var comparisonEvents: [ComparisonEvent] = []
+    private(set) var comparisonInputFPS: Double = 0
+    private(set) var comparisonSourceFrames: Int = 0
+    private func comparisonEvent(_ phase: String, sourceFrame: Int? = nil, completedSamples: Int? = nil) {
+        guard let epoch = comparisonEpochNanoseconds else { return }
+        comparisonEvents.append(ComparisonEvent(phase: phase,
+            seconds: Double(DispatchTime.now().uptimeNanoseconds - epoch) / 1e9,
+            sourceFrame: sourceFrame, completedSamples: completedSamples))
+    }
+
     var vitposeThreads: Int = min(4, max(2, ProcessInfo.processInfo.activeProcessorCount))
     var denoiserThreads: Int = 2
 
@@ -73,13 +91,16 @@ final class OnDeviceGemxClient {
         let W = reader.info.width, H = reader.info.height
         let K = GemxPipeline.estimateK(width: W, height: H)
         let fps = reader.info.fps
+        comparisonInputFPS = fps
         let resampling = options.resampleFps.map { abs(fps - $0) >= 1 } ?? false
         let step = GemxPipeline.frameStride(stride30: options.sampleStep, fps: fps, resampling: resampling)
 
         var t0 = Date()
+        comparisonEvent("detect")
         onProgress?("Detecting person…")
         let (n, idx, bbxSampled) = try detectBoxes(reader: reader, step: step, onProgress: onProgress)
         T["detect"] = Date().timeIntervalSince(t0)
+        comparisonSourceFrames = n
         try Task.checkCancellation()
         guard n > 0 else { throw OnDeviceError.shapeMismatch("video decoded to 0 frames") }
 
@@ -89,6 +110,7 @@ final class OnDeviceGemxClient {
         }
 
         t0 = Date()
+        comparisonEvent("pose")
         let kpSampled: [Float]
         if let ok = oracleKp2d {
             var tmp = [Float](repeating: 0, count: idx.count * 77 * 3)
@@ -110,12 +132,14 @@ final class OnDeviceGemxClient {
         let bbxXys = GemxPipeline.interpolate(sampled: bbxFlat, positions: tl.positions, n: L, stride: 3)
 
         t0 = Date()
+        comparisonEvent("denoise")
         onProgress?("Denoising \(L) frames…")
         let (predX, predCam) = try denoise(kp2d: kp2d, bbxXys: bbxXys, K: K, L: L, tier: options.tier)
         T["denoise"] = Date().timeIntervalSince(t0)
         try Task.checkCancellation()
 
         t0 = Date()
+        comparisonEvent("post")
         onProgress?("Building skeleton…")
         let out = finish(predX: predX, predCam: predCam, bbxXys: bbxXys, camera: GemxCamera(width: W, height: H, K: K), L: L, fps: tl.fps)
         T["post"] = Date().timeIntervalSince(t0)
@@ -154,13 +178,14 @@ final class OnDeviceGemxClient {
                     poseModel: String? = nil, onProgress: (@Sendable (String) -> Void)?) throws -> [Float] {
         let coreml: GemxVitPoseCoreML?
         lastPoseLoadSeconds = 0
-        if backend == .coreml, GemxVitPoseCoreML.modelURL(in: modelsDir, preferred: poseModel) != nil {
+        if backend == .coreml {
             onProgress?("Preparing pose model…")
             coreml = try vitposeCoreMLModel(compute: compute, preferred: poseModel)
         } else {
             coreml = nil
         }
         let sess = try coreml == nil ? vitposeSession(threads: threads) : nil
+        comparisonEvent("pose_ready")
         let cropCount = 3 * GemxConst.cropH * GemxConst.cropW
         let hmCount = GemxConst.numJoints * GemxConst.hmH * GemxConst.hmW
         let cropBuf = UnsafeMutablePointer<Float>.allocate(capacity: 2 * cropCount)
@@ -204,6 +229,7 @@ final class OnDeviceGemxClient {
             out.withUnsafeMutableBufferPointer { op in
                 GemxPipeline.heatmapsToKp2d(hm: hmBuf + (k % 2) * hmCount, box: boxes[k], into: op.baseAddress! + k * 231)
             }
+            comparisonEvent("pose_sample", sourceFrame: idx[k], completedSamples: k + 1)
         }
 
         var k = 0
@@ -329,7 +355,9 @@ final class OnDeviceGemxClient {
 
     private func vitposeCoreMLModel(compute: GemxPoseCompute = .auto, preferred: String? = nil) throws -> GemxVitPoseCoreML {
         if let m = vitposeCoreML, m.computeUnits == compute.mlComputeUnits, preferred == nil || m.name == preferred { return m }
-        guard let url = GemxVitPoseCoreML.modelURL(in: modelsDir, preferred: preferred) else { throw OnDeviceError.resourceMissing("Gemx/vitpose_*.mlmodelc") }
+        guard let url = GemxVitPoseCoreML.modelURL(in: modelsDir, preferred: preferred) else {
+            throw OnDeviceError.resourceMissing("Gemx/\(preferred ?? "vitpose_w8.mlmodelc")")
+        }
         let t0 = Date()
         let m = try GemxVitPoseCoreML(modelURL: url, computeUnits: compute.mlComputeUnits)
         lastPoseLoadSeconds = Date().timeIntervalSince(t0)

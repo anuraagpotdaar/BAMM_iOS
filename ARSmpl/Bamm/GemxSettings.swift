@@ -25,6 +25,15 @@ enum GemxPoseCompute: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
+enum GemxPosePrecision: String, CaseIterable, Identifiable, Sendable {
+    case w8, w8a8
+    var id: String { rawValue }
+    var displayName: String { self == .w8 ? "W8" : "W8A8" }
+    var modelResource: String {
+        self == .w8 ? "vitpose_w8.mlmodelc" : "vitpose_w8a8_clipped.mlmodelc"
+    }
+}
+
 enum GemxTier: String, CaseIterable, Identifiable, Sendable {
     case fp16
     case int8
@@ -45,6 +54,7 @@ final class GemxSettings {
     var tier: GemxTier = .fp16
     var poseBackend: GemxPoseBackend = .coreml
     var poseCompute: GemxPoseCompute = .auto
+    var posePrecision: GemxPosePrecision = .w8
 
     var flipTest: Bool = true
 
@@ -62,6 +72,7 @@ final class GemxSettings {
     private static let kM = "gemx.maxSide"
     private static let kB = "gemx.poseBackend"
     private static let kC = "gemx.poseCompute"
+    private static let kQ = "gemx.posePrecision"
     private static let kF = "gemx.flipTest"
 
     private init() {}
@@ -75,6 +86,7 @@ final class GemxSettings {
         if let raw = d.string(forKey: kT), let v = GemxTier(rawValue: raw) { g.tier = v }
         if let raw = d.string(forKey: kB), let v = GemxPoseBackend(rawValue: raw) { g.poseBackend = v }
         if let raw = d.string(forKey: kC), let v = GemxPoseCompute(rawValue: raw) { g.poseCompute = v }
+        if let raw = d.string(forKey: kQ), let v = GemxPosePrecision(rawValue: raw) { g.posePrecision = v }
         if let v = d.object(forKey: kF) as? Bool { g.flipTest = v }
         if let v = d.object(forKey: kP) as? Int, (1...6).contains(v) { g.sampleStep = v }
         if let v = d.object(forKey: kM) as? Int, (360...2160).contains(v) { g.maxSide = v }
@@ -89,6 +101,7 @@ final class GemxSettings {
         d.set(tier.rawValue, forKey: Self.kT)
         d.set(poseBackend.rawValue, forKey: Self.kB)
         d.set(poseCompute.rawValue, forKey: Self.kC)
+        d.set(posePrecision.rawValue, forKey: Self.kQ)
         d.set(flipTest, forKey: Self.kF)
         d.set(sampleStep, forKey: Self.kP)
         d.set(maxSide, forKey: Self.kM)
@@ -96,8 +109,8 @@ final class GemxSettings {
 
     func snapshot() -> GemxOptions {
         GemxOptions(staticCam: staticCam, noImgfeat: noImgfeat, hostedDenoiser: hostedDenoiser,
-                    tier: tier, sampleStep: sampleStep, maxSide: maxSide, poseBackend: poseBackend,
-                    poseCompute: poseCompute, flipTest: flipTest)
+                    tier: tier, sampleStep: sampleStep, maxSide: maxSide, poseBackend: .coreml,
+                    poseCompute: poseCompute, flipTest: flipTest, poseModel: posePrecision.modelResource)
     }
 }
 

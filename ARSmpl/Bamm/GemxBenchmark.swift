@@ -44,6 +44,47 @@ enum GemxBenchmark {
         var out: [Config] = []
         func add(_ c: Config, _ name: String) { var c = c; c.name = name; out.append(c) }
         switch kind {
+        case let value where value == "posecompare" || value.hasPrefix("posecompare:"):
+            let clips = value.split(separator: ":", maxSplits: 1).dropFirst().first
+                .map { $0.split(separator: ",").map(String.init) } ?? ["test3", "test2", "test"]
+            let models = ["w8", "w8a8_clipped"]
+            for clip in clips {
+                for rep in 0...3 {
+                    // Alternate the model order between measured rounds.
+                    let offset = rep == 0 ? 0 : rep - 1
+                    for j in 0..<models.count {
+                        let model = models[(j + offset) % models.count]
+                        var c = best; c.clip = clip; c.poseModel = "vitpose_\(model).mlmodelc"
+                        add(c, "V_\(model)_\(clip)_\(rep == 0 ? "warmup" : "r\(rep)")")
+                    }
+                }
+            }
+        case let value where value == "posequant" || value.hasPrefix("posequant:"):
+            let requested = value.split(separator: ":").dropFirst().first.map(String.init) ?? "w8a8_clipped"
+            let candidate = requested == "w8a8" ? "w8a8_clipped" : requested
+            for rep in 0...3 {
+                let models = rep % 2 == 0 ? ["w8", candidate] : [candidate, "w8"]
+                for model in models {
+                    var c = best; c.poseModel = "vitpose_\(model).mlmodelc"
+                    let suffix = rep == 0 ? "warmup" : "r\(rep)"
+                    add(c, "P_\(model)_test3_\(suffix)")
+                }
+            }
+        case let value where value.hasPrefix("poseone:"):
+            let requested = value.split(separator: ":").dropFirst().first.map(String.init) ?? "w8"
+            let candidate = requested == "w8a8" ? "w8a8_clipped" : requested
+            var c = best; c.poseModel = "vitpose_\(candidate).mlmodelc"
+            add(c, "T_\(candidate)_test3")
+        case "quant":
+            // One excluded warmup and three measured repeats for each tier.
+            for rep in 0...3 {
+                let tiers = rep % 2 == 0 ? ["fp16", "int8"] : ["int8", "fp16"]
+                for tier in tiers {
+                    var c = best; c.tier = tier
+                    let suffix = rep == 0 ? "warmup" : "r\(rep)"
+                    add(c, "Q_\(tier)_test3_\(suffix)")
+                }
+            }
         case "quick":
             add(best, "quick_w8_auto_flip_test3")
             var c = best; c.clip = "test3_demo_6fps"; add(c, "quick_w8_auto_flip_6fps")
@@ -74,7 +115,7 @@ enum GemxBenchmark {
         default:
 
             let wanted = Set(kind.split(separator: ",").map(String.init))
-            out = plan("full").filter { wanted.contains($0.name) }
+            out = (plan("full") + plan("posequant")).filter { wanted.contains($0.name) }
         }
         return out
     }
@@ -89,6 +130,32 @@ enum GemxBenchmark {
             .appendingPathComponent("gemx_bench").appendingPathComponent(runId)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let resultsURL = dir.appendingPathComponent("results.jsonl")
+        if kind == "posedebug" {
+            log("[GemxBench] START \(runId) plan=posedebug results=\(resultsURL.path)")
+            do {
+                try await Task.detached(priority: .userInitiated) {
+                    try await GemxPoseLayerDebug.run(directory: dir) { message in
+                        Task { @MainActor in log(message) }
+                    }
+                }.value
+            } catch { log("[GemxBench] ERROR \(error)") }
+            log("[GemxBench] DONE \(runId)")
+            return
+        }
+        if kind == "posemicro" || kind.hasPrefix("posemicro:") {
+            let variants = kind.split(separator: ":", maxSplits: 1).dropFirst().first
+                .map { $0.split(separator: ",").map { $0 == "w8a8" ? "w8a8_clipped" : String($0) } } ?? ["w8a8_clipped"]
+            log("[GemxBench] START \(runId) plan=\(kind) results=\(resultsURL.path)")
+            do {
+                try await Task.detached(priority: .userInitiated) {
+                    try await GemxPoseMicrobenchmark.run(directory: dir, variants: variants) { message in
+                        Task { @MainActor in log(message) }
+                    }
+                }.value
+            } catch { log("[GemxBench] ERROR \(error)") }
+            log("[GemxBench] DONE \(runId)")
+            return
+        }
         if resume != nil, let done = try? String(contentsOf: resultsURL, encoding: .utf8) {
             let doneNames = Set(done.split(separator: "\n").compactMap { line -> String? in
                 guard let d = line.data(using: .utf8), let r = try? JSONDecoder().decode(Result.self, from: d) else { return nil }
@@ -104,11 +171,17 @@ enum GemxBenchmark {
             log("[GemxBench] run \(i + 1)/\(configs.count) \(cfg.name): \(cfg.poseModel) \(cfg.compute) flip=\(cfg.flip) tier=\(cfg.tier) step=\(cfg.step) clip=\(cfg.clip)")
 
             let tw = Date()
-            while [.serious, .critical].contains(ProcessInfo.processInfo.thermalState), Date().timeIntervalSince(tw) < 300 {
+            // Wait for the same starting thermal category in pose comparisons.
+            func needsCooling() -> Bool {
+                let state = ProcessInfo.processInfo.thermalState
+                return (kind.hasPrefix("posecompare") || kind.hasPrefix("posequant"))
+                    ? state != .nominal : [.serious, .critical].contains(state)
+            }
+            while needsCooling(), Date().timeIntervalSince(tw) < 300 {
                 log("[GemxBench]   thermal \(thermal()), waiting…")
                 try? await Task.sleep(nanoseconds: 10_000_000_000)
             }
-            var r = await runOne(cfg, log: log)
+            var r = await runOne(cfg, directory: dir, exportComparison: kind.hasPrefix("posecompare"), log: log)
             r.thermalWaitSeconds = Date().timeIntervalSince(tw) - r.totalSeconds
             if let line = try? enc.encode(r), let s = String(data: line, encoding: .utf8), let h = FileHandle(forWritingAtPath: resultsURL.path) ?? create(resultsURL) {
                 h.seekToEndOfFile(); h.write((s + "\n").data(using: .utf8)!); try? h.close()
@@ -127,7 +200,8 @@ enum GemxBenchmark {
         return FileHandle(forWritingAtPath: url.path)
     }
 
-    private static func runOne(_ cfg: Config, log: @escaping (String) -> Void) async -> Result {
+    private static func runOne(_ cfg: Config, directory: URL, exportComparison: Bool,
+                               log: @escaping (String) -> Void) async -> Result {
         let started = ISO8601DateFormatter().string(from: Date())
         let thermalBefore = thermal(), batteryBefore = UIDevice.current.batteryLevel
         let footBefore = footprintMB()
@@ -141,8 +215,10 @@ enum GemxBenchmark {
         let sampler = FootprintSampler()
         sampler.start()
         let t0 = Date()
+        let monotonicStart = DispatchTime.now().uptimeNanoseconds
         do {
             let client = try OnDeviceGemxClient()
+            if exportComparison { client.comparisonEpochNanoseconds = monotonicStart }
             let opts = GemxOptions(staticCam: true, noImgfeat: false, hostedDenoiser: .pytorch,
                                    tier: GemxTier(rawValue: cfg.tier) ?? .fp16, sampleStep: cfg.step, maxSide: cfg.maxSide,
                                    poseBackend: .coreml, poseCompute: GemxPoseCompute(rawValue: cfg.compute) ?? .auto,
@@ -159,11 +235,13 @@ enum GemxBenchmark {
             let vp = (res.timings["vitpose"] ?? 0) - res.poseLoadSeconds
             r.poseMsPerSampledFrame = res.sampledFrames > 0 ? vp * 1000 / Double(res.sampledFrames) : 0
             r.ok = true
-            let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("gemx_bench")
-            if let runDir = try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil).sorted(by: { $0.path < $1.path }).last {
-                try? res.bvh.write(to: runDir.appendingPathComponent("\(cfg.name).bvh"), atomically: true, encoding: .utf8)
+            try res.bvh.write(to: directory.appendingPathComponent("\(cfg.name).bvh"), atomically: true, encoding: .utf8)
+            if exportComparison {
+                try saveComparison(res, client: client, totalSeconds: r.totalSeconds,
+                                   directory: directory.appendingPathComponent(cfg.name))
             }
         } catch {
+            r.ok = false
             r.totalSeconds = Date().timeIntervalSince(t0)
             r.error = String(describing: error)
         }
@@ -172,6 +250,31 @@ enum GemxBenchmark {
         r.thermalAfter = thermal()
         r.batteryAfter = UIDevice.current.batteryLevel
         return r
+    }
+
+    private static func saveComparison(_ res: OnDeviceGemxClient.RunResult, client: OnDeviceGemxClient,
+                                        totalSeconds: Double, directory: URL) throws {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        func floats(_ values: [Float], _ name: String) throws {
+            try values.withUnsafeBytes { try Data($0).write(to: directory.appendingPathComponent(name)) }
+        }
+        try floats(res.kp2d, "kp2d.f32")
+        try floats(res.bbxXys, "boxes.f32")
+        try floats(res.joints77.map(Float.init), "joints_global.f32")
+        try floats(res.jointsIncam.map(Float.init), "joints_incam.f32")
+        let camera = res.camera.camera
+        let events: [[String: Any]] = client.comparisonEvents.map { e in
+            ["phase": e.phase, "seconds": e.seconds, "sourceFrame": e.sourceFrame ?? -1,
+             "completedSamples": e.completedSamples ?? 0]
+        }
+        let metadata: [String: Any] = ["frames": res.motion.frames.count,
+            "frameTime": res.motion.frameTime, "width": camera.width, "height": camera.height,
+            "K": camera.K, "sourceFPS": client.comparisonInputFPS,
+            "sourceFrames": client.comparisonSourceFrames, "sampledFrames": res.sampledFrames,
+            "totalSeconds": totalSeconds, "events": events,
+            "scope": "Device outputs; timestamps measured during sequential runs. Artifact writes occur after the pipeline timer stops."]
+        try JSONSerialization.data(withJSONObject: metadata, options: [.sortedKeys, .prettyPrinted])
+            .write(to: directory.appendingPathComponent("comparison.json"))
     }
 
     static func deviceModel() -> String {
